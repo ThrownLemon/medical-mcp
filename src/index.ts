@@ -10,6 +10,8 @@ import {
   searchPubMedArticles,
   searchRxNormDrugs,
   searchGoogleScholar,
+  listWhoIndicators,
+  pbsGet,
 } from "./utils.js";
 
 const server = new McpServer({
@@ -88,6 +90,120 @@ server.tool(
         ],
       };
     }
+  },
+);
+// Convenience: list latest PBS schedules
+server.tool(
+  "pbs-list-schedules",
+  "List PBS schedules (optionally only the latest schedule)",
+  {
+    limit: z.number().int().optional().default(5),
+    latest_only: z
+      .boolean()
+      .optional()
+      .default(true)
+      .describe("If true, only returns the latest schedule_code"),
+  },
+  async ({ limit, latest_only }) => {
+    const params: Record<string, string> = { limit: String(limit) };
+    if (latest_only) params.get_latest_schedule_only = "true";
+    const data = (await pbsGet("schedules", params)) as any;
+    const text = JSON.stringify(data).slice(0, 2000);
+    return { content: [{ type: "text", text }] };
+  },
+);
+
+// Convenience: get PBS items by code, with optional schedule
+server.tool(
+  "pbs-get-item",
+  "Fetch PBS item(s) by pbs_item_code and optional schedule_code",
+  {
+    pbs_item_code: z.string().describe("PBS item code, e.g. '1234K'"),
+    schedule_code: z
+      .string()
+      .optional()
+      .describe("If omitted, API may return across schedules or use latest-only flows"),
+    limit: z.number().int().optional().default(5),
+  },
+  async ({ pbs_item_code, schedule_code, limit }) => {
+    const params: Record<string, string> = { pbs_item_code, limit: String(limit) };
+    if (schedule_code) params.schedule_code = schedule_code;
+    const data = (await pbsGet("items", params)) as any;
+    const text = JSON.stringify(data).slice(0, 2000);
+    return { content: [{ type: "text", text }] };
+  },
+);
+
+// Convenience: search item overview by ODATA filter
+server.tool(
+  "pbs-search-item-overview",
+  "Search PBS item-overview using ODATA filter expression (advanced)",
+  {
+    filter: z.string().describe("ODATA filter, e.g. atc_code eq 'A10BA02'"),
+    limit: z.number().int().optional().default(5),
+  },
+  async ({ filter, limit }) => {
+    const params: Record<string, string> = { limit: String(limit), filter };
+    const data = (await pbsGet("item-overview", params)) as any;
+    const text = JSON.stringify(data).slice(0, 2000);
+    return { content: [{ type: "text", text }] };
+  },
+);
+server.tool(
+  "pbs-search",
+  "Query Australia's PBS public API (rate-limited; one request per ~20s across all users)",
+  {
+    endpoint: z
+      .enum(["schedules", "items", "item-overview", "organisations", "fees"]) // common endpoints; still allow manual advanced via pbs-search if needed
+      .or(z.string())
+      .describe("PBS endpoint under base, e.g. 'schedules', 'items', 'item-overview'"),
+    params: z
+      .record(z.string())
+      .optional()
+      .describe("Optional query parameters like scheduleCode, pbsItemCode, program"),
+  },
+  async ({ endpoint, params }) => {
+    try {
+      const result = await pbsGet(endpoint, params);
+      const preview = typeof result === "string" ? result.slice(0, 2000) : JSON.stringify(result).slice(0, 2000);
+      return {
+        content: [
+          {
+            type: "text",
+            text: preview || "No content returned",
+          },
+        ],
+      };
+    } catch (error: any) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error calling PBS API: ${error.message || String(error)}`,
+          },
+        ],
+      };
+    }
+  },
+);
+server.tool(
+  "list-who-indicators",
+  "List WHO indicators by searching for a keyword (useful to find exact indicator names/codes)",
+  {
+    query: z.string().describe("Keyword to search in WHO Indicator names"),
+  },
+  async ({ query }) => {
+    const items = await listWhoIndicators(query);
+    if (!items.length) {
+      return {
+        content: [{ type: "text", text: `No WHO indicators found for "${query}".` }],
+      };
+    }
+    const text = items
+      .slice(0, 20)
+      .map((i, idx) => `${idx + 1}. ${i.name} (code: ${i.code})`)
+      .join("\n");
+    return { content: [{ type: "text", text }] };
   },
 );
 

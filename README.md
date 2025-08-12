@@ -150,6 +150,31 @@ Search for drug information using RxNorm (standardized drug nomenclature).
 
 - Standardized drug information with RxCUI codes, synonyms, and term types
 
+### 🇦🇺 Australia Extensions
+
+#### `list-who-indicators`
+
+Search WHO indicator names/codes to find the exact indicator to use.
+
+Input:
+
+- `query` (string): keyword to search
+
+#### `pbs-search`
+
+Query Australia's public PBS API. Rate-limited to about one request per 20 seconds across all users.
+
+Input:
+
+- `endpoint` (string): path under `PBS_API_BASE` (e.g., `api/v3/schedules`, `api/v3/items`)
+- `params` (object, optional): filter params like `scheduleCode`, `pbsItemCode`, `program`
+
+Environment variables:
+
+- `DEFAULT_COUNTRY_ISO3` (optional): e.g., `AUS` to default WHO queries to Australia when no country provided
+- `PBS_API_BASE` (required for PBS): set to the PBS base, e.g. `https://data-api.health.gov.au/pbs/api/v3` (see PBS API docs)
+- `PBS_SUBSCRIPTION_KEY` (optional): defaults to the public key from the PBS docs if not provided
+
 ## Installation
 
 1. Clone this repository:

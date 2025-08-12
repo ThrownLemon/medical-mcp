@@ -52,6 +52,39 @@ export async function getHealthIndicators(
   indicatorName: string,
   country?: string,
 ): Promise<WHOIndicator[]> {
+  const resolveCountryCode = (input?: string): string | undefined => {
+    if (!input) {
+      return undefined;
+    }
+    const normalized = String(input).trim().toUpperCase();
+    const map: Record<string, string> = {
+      AUS: "AUS",
+      AUSTRALIA: "AUS",
+      AU: "AUS",
+      USA: "USA",
+      US: "USA",
+      "UNITED STATES": "USA",
+      GBR: "GBR",
+      UK: "GBR",
+      "UNITED KINGDOM": "GBR",
+      NZ: "NZL",
+      NZL: "NZL",
+      "NEW ZEALAND": "NZL",
+      CANADA: "CAN",
+      CA: "CAN",
+      CAN: "CAN",
+      INDIA: "IND",
+      IND: "IND",
+      JAPAN: "JPN",
+      JPN: "JPN",
+      CHINA: "CHN",
+      CHN: "CHN",
+      "SOUTH AFRICA": "ZAF",
+      ZAF: "ZAF",
+    };
+    return map[normalized] || (normalized.length === 3 ? normalized : undefined);
+  };
+
   // Escape single quotes per OData rules
   const escapedName = indicatorName.replace(/'/g, "''");
 
@@ -95,7 +128,9 @@ export async function getHealthIndicators(
 
   // 3) Query the indicator-specific endpoint, optionally filter by country and both-sexes
   const filters: string[] = [];
-  if (country) filters.push(`SpatialDim eq '${country}'`);
+  const defaultIso = process.env.DEFAULT_COUNTRY_ISO3;
+  const iso3 = resolveCountryCode(country || defaultIso);
+  if (iso3) filters.push(`SpatialDim eq '${iso3}'`);
   // Prefer both sexes when present
   filters.push(`(Dim1 eq 'SEX_BTSX' or Dim1 eq null)`);
   const filter = filters.length ? filters.join(" and ") : undefined;
@@ -114,6 +149,24 @@ export async function getHealthIndicators(
       .set("User-Agent", USER_AGENT);
     return dataRes.body.value || [];
   } catch (err) {
+    return [];
+  }
+}
+
+export async function listWhoIndicators(term: string): Promise<{ code: string; name: string }[]> {
+  const escaped = term.replace(/'/g, "''");
+  try {
+    const res = await superagent
+      .get(`${WHO_API_BASE}/Indicator`)
+      .query({
+        $filter: `contains(IndicatorName,'${escaped}')`,
+        $top: 50,
+        $format: "json",
+      })
+      .set("User-Agent", USER_AGENT);
+    const list = res.body.value || [];
+    return list.map((it: any) => ({ code: it.IndicatorCode, name: it.IndicatorName }));
+  } catch (e) {
     return [];
   }
 }
@@ -393,5 +446,57 @@ export async function searchPubMedArticles(
     return articles;
   } catch (error) {
     return [];
+  }
+}
+
+// PBS (Australia) Public API helpers
+let pbsLastCallAt: number | null = null;
+
+function normalizeBaseUrl(base: string): string {
+  return base.endsWith("/") ? base.slice(0, -1) : base;
+}
+
+export async function pbsGet(
+  endpoint: string,
+  queryParams?: Record<string, string | number | boolean>,
+): Promise<unknown> {
+  const base = process.env.PBS_API_BASE;
+  if (!base) {
+    throw new Error(
+      "PBS_API_BASE is not set. Please set the base URL for the PBS public API (e.g., .../api/v3).",
+    );
+  }
+
+  const minIntervalMs = Number(process.env.PBS_MIN_INTERVAL_MS || 20000);
+  const now = Date.now();
+  if (pbsLastCallAt) {
+    const elapsed = now - pbsLastCallAt;
+    if (elapsed < minIntervalMs) {
+      const waitMs = minIntervalMs - elapsed + 50;
+      await randomDelay(waitMs, waitMs + 10);
+    }
+  }
+
+  // Allow callers to pass endpoints with or without api/v3 prefix
+  const normalizedEndpoint = endpoint
+    .replace(/^\//, "")
+    .replace(/^api\/v3\//, "");
+  const url = `${normalizeBaseUrl(base)}/${normalizedEndpoint}`;
+  const req = superagent.get(url).query(queryParams || {}).set("User-Agent", USER_AGENT);
+  const subKey = process.env.PBS_SUBSCRIPTION_KEY || "2384af7c667342ceb5a736fe29f1dc6b";
+  if (subKey) {
+    req.set("Subscription-Key", subKey);
+  }
+  const res = await req.timeout({
+    response: 30000,
+    deadline: 60000,
+  });
+
+  pbsLastCallAt = Date.now();
+
+  try {
+    return res.body ?? JSON.parse(res.text);
+  } catch {
+    return res.text;
   }
 }
