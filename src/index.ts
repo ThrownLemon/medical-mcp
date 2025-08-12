@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
@@ -210,13 +211,20 @@ server.tool(
 
       const displayIndicators = indicators.slice(0, limit);
       displayIndicators.forEach((ind, index) => {
-        result += `${index + 1}. **${ind.SpatialDim}** (${ind.TimeDim})\n`;
-        result += `   Value: ${ind.Value} ${ind.Comments || ""}\n`;
-        result += `   Numeric Value: ${ind.NumericValue}\n`;
-        if (ind.Low && ind.High) {
+        result += `${index + 1}. **${ind.SpatialDim ?? "N/A"}** (${ind.TimeDim ?? "N/A"})\n`;
+        if (ind.Value !== undefined) {
+          result += `   Value: ${ind.Value} ${ind.Comments || ""}\n`;
+        }
+        if (ind.NumericValue !== undefined) {
+          result += `   Numeric Value: ${ind.NumericValue}\n`;
+        }
+        if (ind.Low !== undefined && ind.High !== undefined) {
           result += `   Range: ${ind.Low} - ${ind.High}\n`;
         }
-        result += `   Date: ${ind.Date}\n\n`;
+        if (ind.Date) {
+          result += `   Date: ${ind.Date}\n`;
+        }
+        result += "\n";
       });
 
       return {

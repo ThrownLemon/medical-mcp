@@ -109,7 +109,7 @@ Found 10 article(s)
 
 #### `search-google-scholar`
 
-Search for academic research articles using Google Scholar.
+Search for academic research articles using Google Scholar. If you set `SERPAPI_KEY` in your environment, the server will use SerpAPI's Google Scholar engine first and fall back to scraping as needed.
 
 **Input:**
 
@@ -185,6 +185,7 @@ Environment variables:
 
 - `PORT` or `MCP_PORT` (default: `3000`)
 - `HOST` (default: `127.0.0.1`)
+- `SERPAPI_KEY` (optional): If set, Google Scholar tool prefers SerpAPI and falls back to scraping
 
 Once started:
 
@@ -284,12 +285,13 @@ This MCP server integrates with the following medical APIs:
 - Drug name standardization and relationships
 - Clinical drug information
 
-### Google Scholar (Web Scraping)
+### Google Scholar (Web Scraping + Optional SerpAPI)
 
-- Web scraping of Google Scholar search results
+- Web scraping of Google Scholar search results (default)
 - Academic research article discovery
 - Citation and publication information
 - **Note**: Uses Puppeteer for browser automation with anti-detection measures
+- Optional SerpAPI integration via `SERPAPI_KEY` to improve reliability
 
 ## Data Sources
 

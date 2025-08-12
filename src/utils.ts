@@ -52,20 +52,65 @@ export async function getHealthIndicators(
   indicatorName: string,
   country?: string,
 ): Promise<WHOIndicator[]> {
-  let filter = `IndicatorName eq '${indicatorName}'`;
+  // Escape single quotes per OData rules
+  const escapedName = indicatorName.replace(/'/g, "''");
+  const filterParts: string[] = [`IndicatorName eq '${escapedName}'`];
   if (country) {
-    filter += ` and SpatialDim eq '${country}'`;
+    filterParts.push(`SpatialDim eq '${country}'`);
   }
+  const baseFilter = filterParts.join(" and ");
 
-  const res = await superagent
-    .get(`${WHO_API_BASE}/Indicator`)
-    .query({
-      $filter: filter,
-      $format: "json",
-    })
-    .set("User-Agent", USER_AGENT);
+  try {
+    // Query the GHO dataset which contains the actual values
+    const res = await superagent
+      .get(`${WHO_API_BASE}/GHO`)
+      .query({
+        $filter: baseFilter,
+        $orderby: "TimeDim desc",
+        $top: 200,
+        $format: "json",
+      })
+      .set("User-Agent", USER_AGENT);
 
-  return res.body.value || [];
+    return res.body.value || [];
+  } catch (err) {
+    // Fallback: try to resolve IndicatorCode from the Indicator catalog using a contains() search
+    try {
+      const indicatorRes = await superagent
+        .get(`${WHO_API_BASE}/Indicator`)
+        .query({
+          $filter: `contains(IndicatorName,'${escapedName}')`,
+          $top: 1,
+          $format: "json",
+        })
+        .set("User-Agent", USER_AGENT);
+
+      const indicator = indicatorRes.body.value?.[0];
+      const code: string | undefined = indicator?.IndicatorCode;
+      if (!code) return [];
+
+      const fallbackFilter = [
+        `IndicatorCode eq '${code}'`,
+        country ? `SpatialDim eq '${country}'` : undefined,
+      ]
+        .filter(Boolean)
+        .join(" and ");
+
+      const res2 = await superagent
+        .get(`${WHO_API_BASE}/GHO`)
+        .query({
+          $filter: fallbackFilter,
+          $orderby: "TimeDim desc",
+          $top: 200,
+          $format: "json",
+        })
+        .set("User-Agent", USER_AGENT);
+
+      return res2.body.value || [];
+    } catch {
+      return [];
+    }
+  }
 }
 
 // RxNorm API functions
@@ -76,7 +121,42 @@ export async function searchRxNormDrugs(query: string): Promise<RxNormDrug[]> {
       .query({ name: query })
       .set("User-Agent", USER_AGENT);
 
-    return res.body.drugGroup?.conceptGroup?.[0]?.concept || [];
+    const groups: any[] = res.body?.drugGroup?.conceptGroup || [];
+    const concepts: any[] = [];
+
+    for (const group of groups) {
+      if (Array.isArray(group?.conceptProperties)) {
+        concepts.push(...group.conceptProperties);
+      }
+      if (Array.isArray(group?.concept)) {
+        concepts.push(...group.concept);
+      }
+      if (Array.isArray(group?.minConcept)) {
+        concepts.push(...group.minConcept);
+      }
+    }
+
+    const normalize = (c: any): RxNormDrug => ({
+      rxcui: c.rxcui || c.rxCui || "",
+      name: c.name || c.term || "",
+      synonym: Array.isArray(c.synonym)
+        ? c.synonym
+        : typeof c.synonym === "string"
+          ? c.synonym.split("|")
+          : [],
+      tty: c.tty || c.termType || "",
+      language: c.language || "",
+      suppress: c.suppress || "",
+      umlscui: Array.isArray(c.umlscui)
+        ? c.umlscui
+        : typeof c.umlscui === "string"
+          ? c.umlscui.split("|")
+          : [],
+    });
+
+    return concepts
+      .filter((c) => (c?.name || c?.term) && (c?.rxcui || c?.rxCui))
+      .map(normalize);
   } catch (error) {
     return [];
   }
@@ -92,12 +172,37 @@ function randomDelay(min: number, max: number): Promise<void> {
 export async function searchGoogleScholar(
   query: string,
 ): Promise<GoogleScholarArticle[]> {
+  const serpApiKey = process.env.SERPAPI_KEY;
+  // Prefer SerpAPI if available (more reliable than scraping)
+  if (serpApiKey) {
+    try {
+      const res = await superagent
+        .get("https://serpapi.com/search.json")
+        .query({ engine: "google_scholar", q: query, api_key: serpApiKey });
+
+      const items: any[] = res.body?.organic_results || [];
+      return items.map((it) => ({
+        title: it.title || "",
+        authors: it.publication_info?.summary || it.authors?.map((a: any) => a.name).join(", "),
+        abstract: it.snippet || "",
+        journal: it.publication || it.journal || "",
+        year: it.year ? String(it.year) : undefined,
+        citations: it.inline_links?.cited_by?.total ? `Cited by ${it.inline_links.cited_by.total}` : undefined,
+        url: it.link || it.resources?.[0]?.link,
+      }));
+    } catch (error) {
+      if (process.env.DEBUG_SCHOLAR) {
+        console.warn("SerpAPI Google Scholar fallback failed:", error);
+      }
+      // fall through to Puppeteer
+    }
+  }
+
   let browser;
   try {
     // Add a small random delay to avoid rate limiting
     await randomDelay(1000, 3000);
 
-    // Launch browser with stealth settings
     browser = await puppeteer.launch({
       headless: true,
       args: [
@@ -115,47 +220,37 @@ export async function searchGoogleScholar(
     });
 
     const page = await browser.newPage();
-
-    // Set viewport and user agent
-    await page.setViewport({ width: 1920, height: 1080 });
+    await page.setViewport({ width: 1280, height: 800 });
     await page.setUserAgent(
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     );
-
-    // Add extra headers to appear more like a real browser
     await page.setExtraHTTPHeaders({
       "Accept-Language": "en-US,en;q=0.9",
-      "Accept-Encoding": "gzip, deflate, br",
       Accept:
         "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
       "Cache-Control": "no-cache",
       Pragma: "no-cache",
     });
 
-    // Navigate to Google Scholar
     const searchUrl = `${GOOGLE_SCHOLAR_API_BASE}?q=${encodeURIComponent(query)}&hl=en`;
-    await page.goto(searchUrl, { waitUntil: "networkidle2", timeout: 30000 });
+    await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
 
-    // Wait for results to load with multiple possible selectors
     try {
-      await page.waitForSelector(".gs_r, .gs_ri", { timeout: 15000 });
+      await page.waitForSelector(".gs_r, .gs_ri, [data-rp]", { timeout: 20000 });
     } catch (error) {
-      // If no results found, check if there's a "no results" message
-      const noResults = await page.$(".gs_r");
-      if (!noResults) {
+      const hasAny = await page.$(".gs_r, .gs_ri, [data-rp]");
+      if (!hasAny) {
         throw new Error("No search results found or page structure changed");
       }
     }
 
     return await page.evaluate(() => {
       const results: GoogleScholarArticle[] = [];
-      // Try multiple selectors for different Google Scholar layouts
       const articleElements = document.querySelectorAll(
         ".gs_r, .gs_ri, [data-rp]",
       );
 
       articleElements.forEach((element) => {
-        // Try multiple selectors for title
         const titleElement =
           element.querySelector(".gs_rt a, .gs_rt, h3 a, h3") ||
           element.querySelector("a[data-clk]") ||
@@ -163,28 +258,24 @@ export async function searchGoogleScholar(
         const title = titleElement?.textContent?.trim() || "";
         const url = (titleElement as HTMLAnchorElement)?.href || "";
 
-        // Try multiple selectors for authors/venue
         const authorsElement =
           element.querySelector(".gs_a, .gs_authors, .gs_venue") ||
           element.querySelector('[class*="author"]') ||
           element.querySelector('[class*="venue"]');
         const authors = authorsElement?.textContent?.trim() || "";
 
-        // Try multiple selectors for abstract
         const abstractElement =
           element.querySelector(".gs_rs, .gs_rs_a, .gs_snippet") ||
           element.querySelector('[class*="snippet"]') ||
           element.querySelector('[class*="abstract"]');
         const abstract = abstractElement?.textContent?.trim() || "";
 
-        // Try multiple selectors for citations
         const citationsElement =
           element.querySelector(".gs_fl a, .gs_fl") ||
           element.querySelector('[class*="citation"]') ||
           element.querySelector('a[href*="cites"]');
         const citations = citationsElement?.textContent?.trim() || "";
 
-        // Extract year from various sources
         let year = "";
         const yearMatch =
           authors.match(/(\d{4})/) ||
@@ -194,7 +285,6 @@ export async function searchGoogleScholar(
           year = yearMatch[1];
         }
 
-        // Extract journal from authors string or other sources
         let journal = "";
         const journalMatch =
           authors.match(/- ([^-]+)$/) ||
@@ -205,7 +295,6 @@ export async function searchGoogleScholar(
         }
 
         if (title && title.length > 5) {
-          // Only include if title is substantial
           results.push({
             title,
             authors,
@@ -221,7 +310,9 @@ export async function searchGoogleScholar(
       return results;
     });
   } catch (error) {
-    console.error("Error scraping Google Scholar:", error);
+    if (process.env.DEBUG_SCHOLAR) {
+      console.warn("Error scraping Google Scholar:", error);
+    }
     return [];
   } finally {
     if (browser) {
