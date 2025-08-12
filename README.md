@@ -420,6 +420,12 @@ This MCP server integrates with the following medical APIs:
 - `GET /api/v3/organisations` — Manufacturer/responsible party lookup
 - `GET /api/v3/fees` — Fees by `program_code` (and optional `schedule_code`)
 
+#### Convenience wrappers and validations
+
+- All PBS tools validate `pbs_item_code` (format like `12210P`) and numeric `schedule_code`.
+- `pbs-get-restrictions-for-item` now returns composite restriction text grouped and cleaned for readability.
+- Most composed tools use caching to minimize API calls and respect PBS rate limits.
+
 ## Data Sources
 
 ### FDA (Food and Drug Administration)

@@ -500,3 +500,73 @@ export async function pbsGet(
     return res.text;
   }
 }
+
+// Simple in-memory TTL cache for PBS GETs
+type CacheEntry = { value: unknown; expiresAt: number };
+const pbsCache = new Map<string, CacheEntry>();
+const PBS_CACHE_MAX_ENTRIES = 200;
+
+function buildCacheKey(endpoint: string, queryParams?: Record<string, string | number | boolean>): string {
+  const normalizedEndpoint = String(endpoint).replace(/\/$/, "");
+  const qp = queryParams || {};
+  const keys = Object.keys(qp).sort();
+  const parts = keys.map((k) => `${k}=${String((qp as any)[k])}`);
+  return `${normalizedEndpoint}?${parts.join("&")}`;
+}
+
+function pruneCacheIfNeeded() {
+  if (pbsCache.size <= PBS_CACHE_MAX_ENTRIES) return;
+  // delete oldest entries
+  const toDelete = pbsCache.size - PBS_CACHE_MAX_ENTRIES;
+  let i = 0;
+  for (const key of pbsCache.keys()) {
+    pbsCache.delete(key);
+    if (++i >= toDelete) break;
+  }
+}
+
+export async function pbsGetCached(
+  endpoint: string,
+  queryParams?: Record<string, string | number | boolean>,
+  ttlMs: number = Number(process.env.PBS_CACHE_TTL_MS || 5 * 60 * 1000),
+): Promise<unknown> {
+  const key = buildCacheKey(endpoint, queryParams);
+  const now = Date.now();
+  const hit = pbsCache.get(key);
+  if (hit && hit.expiresAt > now) return hit.value;
+  const value = await pbsGet(endpoint, queryParams);
+  pbsCache.set(key, { value, expiresAt: now + ttlMs });
+  pruneCacheIfNeeded();
+  return value;
+}
+
+/**
+ * Resolve the latest schedule_code using the PBS schedules endpoint.
+ * Falls back to throwing an error if no schedule is returned.
+ */
+export async function resolveLatestScheduleCode(): Promise<string | number> {
+  const data = (await pbsGetCached("schedules", { get_latest_schedule_only: "true", limit: 1 })) as any;
+  const rows = Array.isArray(data?.data) ? data.data : (data?.data ? [data.data] : []);
+  const latest = rows[0];
+  const schedule = latest?.schedule_code;
+  if (!schedule) {
+    throw new Error("Could not resolve latest PBS schedule_code");
+  }
+  return schedule;
+}
+
+/**
+ * Fetch a single PBS item by item code (pbs_code), optionally constrained to a schedule.
+ */
+export async function getItemByCode(
+  pbsCode: string,
+  scheduleCode?: string | number,
+): Promise<any | null> {
+  const params: Record<string, string> = {
+    pbs_code: String(pbsCode),
+    limit: "1",
+  };
+  if (scheduleCode != null) params.schedule_code = String(scheduleCode);
+  const resp = (await pbsGetCached("items", params)) as any;
+  return resp?.data?.[0] ?? null;
+}

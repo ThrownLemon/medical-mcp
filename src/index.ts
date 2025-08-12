@@ -12,6 +12,9 @@ import {
   searchGoogleScholar,
   listWhoIndicators,
   pbsGet,
+  pbsGetCached,
+  resolveLatestScheduleCode,
+  getItemByCode,
 } from "./utils.js";
 
 const server = new McpServer({
@@ -23,10 +26,58 @@ const server = new McpServer({
   },
 });
 
+// Input validation and formatting helpers
+const PBS_ITEM_CODE_REGEX = /^[0-9]{4,6}[A-Z]$/;
+function normalizePbsItemCode(input: string): string {
+  return String(input || "").trim().toUpperCase();
+}
+function isValidPbsItemCode(input: string): boolean {
+  return PBS_ITEM_CODE_REGEX.test(normalizePbsItemCode(input));
+}
+function isValidScheduleCode(input?: string): boolean {
+  if (!input) return true;
+  return /^[0-9]+$/.test(String(input).trim());
+}
+function stripHtml(html: string): string {
+  return String(html || "").replace(/<[^>]*>/g, "\n").replace(/\n\s*\n+/g, "\n").trim();
+}
+
+function formatPrescribingSections(rows: Array<{ pt_position?: number; prescribing_type?: string; prescribing_txt?: string; prscrbg_txt_html?: string }>): string {
+  const labelMap: Record<string, string> = {
+    CRITERIA: "CRITERIA",
+    ADMINISTRATIVE_ADVICE: "NOTE",
+    CAUTION: "CAUTION",
+    INDICATION: "INDICATION",
+    PRESCRIBING_INSTRUCTIONS: "INSTRUCTIONS",
+    PARAMETER: "PARAMETER",
+    TREATMENT_PHASE: "TREATMENT PHASE",
+    LEGACY_SCHEDULE_TEXT: "TEXT",
+    LEGACY_LI_TEXT: "TEXT",
+  };
+  const groups = new Map<string, Array<{ pos: number; text: string }>>();
+  const ordered = [...rows].sort((a, b) => (a.pt_position ?? 0) - (b.pt_position ?? 0));
+  for (const r of ordered) {
+    const label = labelMap[r.prescribing_type || ""] || (r.prescribing_type || "TEXT");
+    const text = r.prescribing_txt || r.prscrbg_txt_html || "";
+    const clean = stripHtml(text);
+    if (!clean) continue;
+    if (!groups.has(label)) groups.set(label, []);
+    groups.get(label)!.push({ pos: r.pt_position ?? 0, text: clean });
+  }
+  const lines: string[] = [];
+  for (const [label, items] of groups.entries()) {
+    lines.push(`- ${label}:`);
+    items.forEach((it, idx) => {
+      lines.push(`  ${idx + 1}. ${it.text}`);
+    });
+  }
+  return lines.join("\n");
+}
+
 // PBS helpers: whitelist common params per endpoint and format results
 function pickAllowedParams(endpoint: string, input: Record<string, string> | undefined): Record<string, string> {
   if (!input) return {};
-  const common = ["limit", "page", "sort", "fields", "filter"]; // generic query controls supported by PBS
+  const common = ["limit", "page", "sort", "sort_fields", "fields", "filter"]; // generic query controls supported by PBS
   const perEndpoint: Record<string, string[]> = {
     schedules: [
       "schedule_code",
@@ -64,6 +115,121 @@ function pickAllowedParams(endpoint: string, input: Record<string, string> | und
     ],
     organisations: ["organisation_id", "name", "schedule_code"],
     fees: ["program_code", "schedule_code"],
+    restrictions: [
+      "res_code",
+      "schedule_code",
+      "treatment_phase",
+      "authority_method",
+      "treatment_of_code",
+      "restriction_number",
+      "li_html_text",
+      "schedule_html_text",
+      "note_indicator",
+      "caution_indicator",
+      "assessment_type_code",
+      "criteria_relationship",
+      "variation_rule_applied",
+      "first_listing_date",
+      "written_authority_required",
+    ],
+    "item-restriction-relationships": [
+      "res_code",
+      "pbs_code",
+      "benefit_type_code",
+      "restriction_indicator",
+      "schedule_code",
+      "res_position",
+    ],
+    "restriction-prescribing-text-relationships": [
+      "schedule_code",
+      "res_code",
+      "prescribing_text_id",
+      "pt_position",
+    ],
+    "prescribing-texts": [
+      "schedule_code",
+      "prescribing_txt_id",
+      "prescribing_type",
+      "prescribing_txt",
+      "prscrbg_txt_html",
+      "complex_authority_rqrd_ind",
+      "assessment_type_code",
+      "apply_to_increase_mq_flag",
+      "apply_to_increase_nr_flag",
+    ],
+    prescribers: [
+      "pbs_code",
+      "prescriber_code",
+      "schedule_code",
+      "prescriber_type",
+    ],
+    "item-atc-relationships": [
+      "atc_code",
+      "schedule_code",
+      "pbs_code",
+      "atc_priority_pct",
+    ],
+    "atc-codes": [
+      "atc_code",
+      "atc_description",
+      "atc_level",
+      "atc_parent_code",
+      "schedule_code",
+    ],
+    "amt-items": [
+      "pbs_concept_id",
+      "concept_type_code",
+      "schedule_code",
+      "amt_code",
+      "li_item_id",
+      "preferred_term",
+      "exempt_ind",
+      "non_amt_code",
+      "pbs_preferred_term",
+    ],
+    copayments: [
+      "schedule_code",
+      "general",
+      "concessional",
+      "safety_net_general",
+      "safety_net_concessional",
+      "safety_net_card_issue",
+      "increased_discount_limit",
+      "safety_net_ctg_contribution",
+    ],
+    "item-pricing-events": [
+      "schedule_code",
+      "li_item_id",
+      "percentage_applied",
+      "event_type_code",
+    ],
+    programs: ["program_code", "schedule_code", "program_title"],
+    "program-dispensing-rules": [
+      "program_code",
+      "dispensing_rule_mnem",
+      "default_indicator",
+      "schedule_code",
+    ],
+    "summary-of-changes": [
+      "schedule_code",
+      "source_schedule_code",
+      "target_effective_date",
+      "source_effective_date",
+      "target_publication_status",
+      "source_publication_status",
+      "target_revision_number",
+      "source_revision_number",
+      "changed_table",
+      "change_type",
+      "sql_statement",
+      "change_detail",
+      "previous_detail",
+      "table_keys",
+      "deleted_ind",
+      "new_ind",
+      "modified_ind",
+      "changed_endpoint",
+    ],
   };
   const allowed = new Set([...(perEndpoint[endpoint] || []), ...common]);
   const out: Record<string, string> = {};
@@ -184,6 +350,275 @@ server.tool(
   },
 );
 
+// PBS: get restrictions (legal text incl. notes/cautions) for an item
+server.tool(
+  "pbs-get-restrictions-for-item",
+  "Fetch ordered restriction text (including notes/cautions) for a PBS item code",
+  {
+    pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'"),
+    schedule_code: z.string().optional().describe("Optional schedule code; if omitted, resolves latest"),
+    limit: z.number().int().optional().default(1).describe("Number of restriction groups to show (usually 1)"),
+  },
+  async ({ pbs_item_code, schedule_code, limit }) => {
+    const code = normalizePbsItemCode(pbs_item_code);
+    if (!isValidPbsItemCode(code)) {
+      return { content: [{ type: "text", text: `Invalid PBS item code: ${pbs_item_code}` }] };
+    }
+    if (!isValidScheduleCode(schedule_code)) {
+      return { content: [{ type: "text", text: `Invalid schedule_code: ${schedule_code}` }] };
+    }
+    // Prefer the item's own schedule_code to avoid 400s when forcing latest
+    const itemQuery: Record<string, string> = pickAllowedParams("items", {
+      pbs_code: code,
+      limit: "1",
+    });
+    const itemResp = (await pbsGetCached("items", itemQuery)) as any;
+    const item = itemResp?.data?.[0];
+    if (!item) return { content: [{ type: "text", text: `No PBS item found for code ${pbs_item_code}.` }] };
+    const schedule = String(schedule_code || item.schedule_code || "");
+    const resRelParams: Record<string, string> = pickAllowedParams(
+      "item-restriction-relationships",
+      { pbs_code: code, ...(schedule ? { schedule_code: schedule } : {}), limit: String(limit) },
+    );
+    const resRel = (await pbsGetCached("item-restriction-relationships", resRelParams)) as any;
+    const relRows: any[] = resRel?.data ?? [];
+    if (!relRows.length) {
+      return { content: [{ type: "text", text: `No restrictions found for ${pbs_item_code}${schedule ? ` in schedule ${schedule}` : ""}.` }] };
+    }
+    // For each restriction code, fetch composite restriction HTML and present grouped text
+    const sections: string[] = [];
+    for (const rel of relRows.slice(0, limit)) {
+      const resCode = rel.res_code;
+      try {
+        const restr = (await pbsGetCached(
+          "restrictions",
+          pickAllowedParams("restrictions", { res_code: resCode, ...(schedule ? { schedule_code: schedule } : {}), limit: "1" }),
+        )) as any;
+        const r = restr?.data?.[0];
+        // Prefer legal instrument text if available, else schedule text
+        const html = r?.li_html_text || r?.schedule_html_text || "";
+        const clean = stripHtml(html);
+        if (clean) {
+          sections.push(`Restriction ${resCode}${rel.benefit_type_code ? ` [${rel.benefit_type_code}]` : ""}\n${clean}`);
+        }
+      } catch {
+        // ignore
+      }
+    }
+    if (!sections.length) return { content: [{ type: "text", text: `No restriction text sections found for ${pbs_item_code}.` }] };
+    return { content: [{ type: "text", text: sections.join("\n\n") }] };
+  },
+);
+
+// PBS: prescribers for item
+server.tool(
+  "pbs-get-prescribers-for-item",
+  "List prescriber types allowed for a PBS item",
+  {
+    pbs_item_code: z.string(),
+    schedule_code: z.string().optional(),
+  },
+  async ({ pbs_item_code, schedule_code }) => {
+    const code = normalizePbsItemCode(pbs_item_code);
+    if (!isValidPbsItemCode(code)) return { content: [{ type: "text", text: `Invalid PBS item code: ${pbs_item_code}` }] };
+    if (!isValidScheduleCode(schedule_code)) return { content: [{ type: "text", text: `Invalid schedule_code: ${schedule_code}` }] };
+    const params = pickAllowedParams("prescribers", {
+      pbs_code: code,
+      ...(schedule_code ? { schedule_code } : {}),
+      limit: "50",
+    });
+    const resp = (await pbsGetCached("prescribers", params)) as any;
+    const rows: any[] = resp?.data ?? [];
+    if (!rows.length) return { content: [{ type: "text", text: `No prescribers found for ${pbs_item_code}.` }] };
+    const text = rows
+      .map((r) => `${r.prescriber_code || "?"} — ${r.prescriber_type || "Unknown"}${r.schedule_code ? ` (schedule ${r.schedule_code})` : ""}`)
+      .join("\n");
+    return { content: [{ type: "text", text }] };
+  },
+);
+
+// PBS: ATC classification for item
+server.tool(
+  "pbs-get-atc-for-item",
+  "Return ATC classification(s) for a PBS item, enriched with ATC descriptions",
+  {
+    pbs_item_code: z.string(),
+    schedule_code: z.string().optional(),
+  },
+  async ({ pbs_item_code, schedule_code }) => {
+    const code = normalizePbsItemCode(pbs_item_code);
+    if (!isValidPbsItemCode(code)) return { content: [{ type: "text", text: `Invalid PBS item code: ${pbs_item_code}` }] };
+    if (!isValidScheduleCode(schedule_code)) return { content: [{ type: "text", text: `Invalid schedule_code: ${schedule_code}` }] };
+    const relParams = pickAllowedParams("item-atc-relationships", {
+      pbs_code: code,
+      ...(schedule_code ? { schedule_code } : {}),
+      limit: "20",
+    });
+    const relResp = (await pbsGetCached("item-atc-relationships", relParams)) as any;
+    const rels: any[] = relResp?.data ?? [];
+    if (!rels.length) return { content: [{ type: "text", text: `No ATC mapping found for ${pbs_item_code}.` }] };
+    // Fetch descriptions for unique atc codes
+    const uniq = Array.from(new Set(rels.map((r) => r.atc_code).filter(Boolean)));
+    const descByCode = new Map<string, string>();
+    for (const code of uniq) {
+      const atcResp = (await pbsGetCached("atc-codes", pickAllowedParams("atc-codes", { atc_code: code, limit: "1" }))) as any;
+      const atcRow = atcResp?.data?.[0];
+      if (atcRow?.atc_description) descByCode.set(code, atcRow.atc_description);
+    }
+    const lines = rels.map((r) => `${r.atc_code} — ${descByCode.get(r.atc_code) || ""}${r.atc_priority_pct ? ` (${r.atc_priority_pct}%)` : ""}`);
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  },
+);
+
+// PBS: AMT mapping for item
+server.tool(
+  "pbs-get-amt-mapping",
+  "Return AMT concept mapping (MP/MPP/TPP) for a PBS item",
+  {
+    pbs_item_code: z.string(),
+    schedule_code: z.string().optional(),
+  },
+  async ({ pbs_item_code, schedule_code }) => {
+    const code = normalizePbsItemCode(pbs_item_code);
+    if (!isValidPbsItemCode(code)) return { content: [{ type: "text", text: `Invalid PBS item code: ${pbs_item_code}` }] };
+    if (!isValidScheduleCode(schedule_code)) return { content: [{ type: "text", text: `Invalid schedule_code: ${schedule_code}` }] };
+    const item = await getItemByCode(code, schedule_code);
+    if (!item) return { content: [{ type: "text", text: `No PBS item found for ${pbs_item_code}.` }] };
+    const li = item.li_item_id;
+    if (!li) return { content: [{ type: "text", text: `No li_item_id available for ${pbs_item_code}.` }] };
+    const resp = (await pbsGetCached("amt-items", pickAllowedParams("amt-items", { li_item_id: li, limit: "20" }))) as any;
+    const rows: any[] = resp?.data ?? [];
+    if (!rows.length) return { content: [{ type: "text", text: `No AMT mapping found for ${pbs_item_code}.` }] };
+    const text = rows
+      .map(
+        (r) => `${r.concept_type_code || "?"}: ${r.amt_code || r.non_amt_code || "(no code)"} — ${r.preferred_term || r.pbs_preferred_term || ""}`,
+      )
+      .join("\n");
+    return { content: [{ type: "text", text }] };
+  },
+);
+
+// PBS: organisation for item
+server.tool(
+  "pbs-get-organisation-for-item",
+  "Return manufacturer/responsible person info for a PBS item",
+  {
+    pbs_item_code: z.string(),
+    schedule_code: z.string().optional(),
+  },
+  async ({ pbs_item_code, schedule_code }) => {
+    const code = normalizePbsItemCode(pbs_item_code);
+    if (!isValidPbsItemCode(code)) return { content: [{ type: "text", text: `Invalid PBS item code: ${pbs_item_code}` }] };
+    if (!isValidScheduleCode(schedule_code)) return { content: [{ type: "text", text: `Invalid schedule_code: ${schedule_code}` }] };
+    const item = await getItemByCode(code, schedule_code);
+    if (!item) return { content: [{ type: "text", text: `No PBS item found for ${pbs_item_code}.` }] };
+    const orgId = item.organisation_id;
+    if (!orgId) return { content: [{ type: "text", text: `No organisation_id on item ${pbs_item_code}.` }] };
+    const resp = (await pbsGetCached(
+      "organisations",
+      pickAllowedParams("organisations", { organisation_id: String(orgId), limit: "1" }),
+    )) as any;
+    const org = resp?.data?.[0];
+    if (!org) return { content: [{ type: "text", text: `No organisation record for id ${orgId}.` }] };
+    const line = `${org.name || "Org"}${org.abn ? ` — ABN ${org.abn}` : ""}${org.city ? ` — ${org.city}` : ""}${
+      org.state ? `, ${org.state}` : ""
+    }${org.postcode ? ` ${org.postcode}` : ""}`;
+    return { content: [{ type: "text", text: line }] };
+  },
+);
+
+// PBS: copayments (latest or given schedule)
+server.tool(
+  "pbs-get-copayments",
+  "Return PBS copayment amounts and safety net thresholds",
+  {
+    schedule_code: z.string().optional(),
+  },
+  async ({ schedule_code }) => {
+    if (!isValidScheduleCode(schedule_code)) {
+      return { content: [{ type: "text", text: `Invalid schedule_code: ${schedule_code}` }] };
+    }
+    let schedule = schedule_code;
+    if (!schedule) {
+      try {
+        schedule = String(await resolveLatestScheduleCode());
+      } catch {}
+    }
+    const resp = (await pbsGetCached(
+      "copayments",
+      pickAllowedParams("copayments", { schedule_code: String(schedule || ""), limit: "1" }),
+    )) as any;
+    const row = resp?.data?.[0];
+    if (!row) return { content: [{ type: "text", text: `No copayments found${schedule ? ` for schedule ${schedule}` : ""}.` }] };
+    const lines = [
+      row.general != null ? `General: ${row.general}` : "",
+      row.concessional != null ? `Concessional: ${row.concessional}` : "",
+      row.safety_net_general != null ? `Safety Net (General): ${row.safety_net_general}` : "",
+      row.safety_net_concessional != null ? `Safety Net (Concessional): ${row.safety_net_concessional}` : "",
+      row.increased_discount_limit != null ? `Increased discount limit: ${row.increased_discount_limit}` : "",
+      row.safety_net_ctg_contribution != null ? `CTG contribution: ${row.safety_net_ctg_contribution}` : "",
+    ].filter(Boolean);
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  },
+);
+
+// PBS: price events for item
+server.tool(
+  "pbs-get-price-events-for-item",
+  "Return statutory price reduction events for a PBS item",
+  {
+    pbs_item_code: z.string(),
+    schedule_code: z.string().optional(),
+  },
+  async ({ pbs_item_code, schedule_code }) => {
+    const code = normalizePbsItemCode(pbs_item_code);
+    if (!isValidPbsItemCode(code)) return { content: [{ type: "text", text: `Invalid PBS item code: ${pbs_item_code}` }] };
+    if (!isValidScheduleCode(schedule_code)) return { content: [{ type: "text", text: `Invalid schedule_code: ${schedule_code}` }] };
+    const item = await getItemByCode(code, schedule_code);
+    if (!item) return { content: [{ type: "text", text: `No PBS item found for ${pbs_item_code}.` }] };
+    const li = item.li_item_id;
+    if (!li) return { content: [{ type: "text", text: `No li_item_id available for ${pbs_item_code}.` }] };
+    const resp = (await pbsGetCached(
+      "item-pricing-events",
+      pickAllowedParams("item-pricing-events", { li_item_id: li, limit: "10" }),
+    )) as any;
+    const rows: any[] = resp?.data ?? [];
+    if (!rows.length) return { content: [{ type: "text", text: `No price events for ${pbs_item_code}.` }] };
+    const text = rows
+      .map((r) => `${r.event_type_code || "EVENT"}${r.percentage_applied ? ` — ${r.percentage_applied}%` : ""}`)
+      .join("\n");
+    return { content: [{ type: "text", text }] };
+  },
+);
+
+// PBS: program details for item
+server.tool(
+  "pbs-get-program-details",
+  "Return program and dispensing rule details for a PBS item",
+  {
+    pbs_item_code: z.string(),
+    schedule_code: z.string().optional(),
+  },
+  async ({ pbs_item_code, schedule_code }) => {
+    const code = normalizePbsItemCode(pbs_item_code);
+    if (!isValidPbsItemCode(code)) return { content: [{ type: "text", text: `Invalid PBS item code: ${pbs_item_code}` }] };
+    if (!isValidScheduleCode(schedule_code)) return { content: [{ type: "text", text: `Invalid schedule_code: ${schedule_code}` }] };
+    const item = await getItemByCode(code, schedule_code);
+    if (!item) return { content: [{ type: "text", text: `No PBS item found for ${pbs_item_code}.` }] };
+    const program = item.program_code;
+    if (!program) return { content: [{ type: "text", text: `No program_code on item ${pbs_item_code}.` }] };
+    const progResp = (await pbsGetCached("programs", pickAllowedParams("programs", { program_code: String(program), limit: "1" }))) as any;
+    const prog = progResp?.data?.[0];
+    const dispResp = (await pbsGetCached(
+      "program-dispensing-rules",
+      pickAllowedParams("program-dispensing-rules", { program_code: String(program), limit: "5" }),
+    )) as any;
+    const rules: any[] = dispResp?.data ?? [];
+    const header = prog?.program_title ? `${program} — ${prog.program_title}` : `${program}`;
+    const lines = [header, ...rules.map((r) => `Rule: ${r.dispensing_rule_mnem || "?"}${r.default_indicator === "Y" ? " (default)" : ""}`)];
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  },
+);
 // Convenience: get PBS items by code, with optional schedule
 server.tool(
   "pbs-get-item",
@@ -197,9 +632,16 @@ server.tool(
     limit: z.number().int().optional().default(5),
   },
   async ({ pbs_item_code, schedule_code, limit }) => {
+    const code = normalizePbsItemCode(pbs_item_code);
+    if (!isValidPbsItemCode(code)) {
+      return { content: [{ type: "text", text: `Invalid PBS item code: ${pbs_item_code}` }] };
+    }
+    if (!isValidScheduleCode(schedule_code)) {
+      return { content: [{ type: "text", text: `Invalid schedule_code: ${schedule_code}` }] };
+    }
     // Map pbs_item_code input to PBS API's expected 'pbs_code' query param
     const params: Record<string, string> = pickAllowedParams("items", {
-      pbs_code: pbs_item_code,
+      pbs_code: code,
       limit: String(limit),
     });
     if (!params.pbs_code) {
@@ -303,6 +745,56 @@ server.tool(
     }
   },
 );
+
+// PBS: summary of changes across schedules
+server.tool(
+  "pbs-summary-of-changes",
+  "Summarize changes between schedules for a given endpoint/table",
+  {
+    schedule_code: z.string().optional().describe("Target schedule code; if omitted uses latest"),
+    source_schedule_code: z.string().optional().describe("Source schedule (previous); if omitted, previous of latest is used if available"),
+    changed_endpoint: z.string().optional().describe("Endpoint/table to filter by, e.g. 'items'"),
+    limit: z.number().int().optional().default(10),
+  },
+  async ({ schedule_code, source_schedule_code, changed_endpoint, limit }) => {
+    if (!isValidScheduleCode(schedule_code) || !isValidScheduleCode(source_schedule_code)) {
+      return { content: [{ type: "text", text: `Invalid schedule_code or source_schedule_code` }] };
+    }
+    let target = schedule_code;
+    if (!target) {
+      try {
+        target = String(await resolveLatestScheduleCode());
+      } catch {}
+    }
+    let source = source_schedule_code;
+    if (!source) {
+      // Try to infer a previous schedule by sorting schedules and picking the previous entry
+      const scheds = (await pbsGetCached("schedules", { limit: 2, sort: "desc", sort_fields: "effective_year desc,effective_month desc,revision_number desc" })) as any;
+      const rows: any[] = scheds?.data ?? [];
+      // If latest in list equals target, pick the next one
+      if (rows.length >= 2) {
+        if (String(rows[0]?.schedule_code) === String(target)) source = String(rows[1]?.schedule_code);
+        else source = String(rows[0]?.schedule_code);
+      }
+    }
+    const params: Record<string, string> = pickAllowedParams("summary-of-changes", {
+      schedule_code: String(target || ""),
+      ...(source ? { source_schedule_code: String(source) } : {}),
+      ...(changed_endpoint ? { changed_endpoint } : {}),
+      limit: String(limit),
+      sort: "asc",
+      sort_fields: "changed_table asc",
+    });
+    const resp = (await pbsGetCached("summary-of-changes", params)) as any;
+    const rows: any[] = resp?.data ?? [];
+    if (!rows.length) return { content: [{ type: "text", text: `No changes found${changed_endpoint ? ` for ${changed_endpoint}` : ""}.` }] };
+    const text = rows
+      .slice(0, limit)
+      .map((r) => `${r.changed_table || "TABLE"}: ${r.change_type || "?"}${r.deleted_ind === "Y" ? " (deleted)" : r.new_ind === "Y" ? " (new)" : r.modified_ind === "Y" ? " (modified)" : ""}`)
+      .join("\n");
+    return { content: [{ type: "text", text }] };
+  },
+);
 server.tool(
   "list-who-indicators",
   "List WHO indicators by searching for a keyword (useful to find exact indicator names/codes)",
@@ -333,9 +825,12 @@ server.tool(
     schedule_code: z.string().optional().describe("Optional schedule code, e.g. '3773'"),
   },
   async ({ pbs_item_code, schedule_code }) => {
+    const code = normalizePbsItemCode(pbs_item_code);
+    if (!isValidPbsItemCode(code)) return { content: [{ type: "text", text: `Invalid PBS item code: ${pbs_item_code}` }] };
+    if (!isValidScheduleCode(schedule_code)) return { content: [{ type: "text", text: `Invalid schedule_code: ${schedule_code}` }] };
     // First, get the item's program_code (and schedule_code if provided)
     const itemParams: Record<string, string> = pickAllowedParams("items", {
-      pbs_code: pbs_item_code,
+      pbs_code: code,
       limit: "1",
     });
     if (schedule_code) itemParams.schedule_code = schedule_code;
