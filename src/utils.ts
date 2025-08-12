@@ -54,29 +54,28 @@ export async function getHealthIndicators(
 ): Promise<WHOIndicator[]> {
   // Escape single quotes per OData rules
   const escapedName = indicatorName.replace(/'/g, "''");
-  const filterParts: string[] = [`IndicatorName eq '${escapedName}'`];
-  if (country) {
-    filterParts.push(`SpatialDim eq '${country}'`);
-  }
-  const baseFilter = filterParts.join(" and ");
 
+  // 1) Try to find exact indicator by name
+  let code: string | undefined;
   try {
-    // Query the GHO dataset which contains the actual values
-    const res = await superagent
-      .get(`${WHO_API_BASE}/GHO`)
+    const exactRes = await superagent
+      .get(`${WHO_API_BASE}/Indicator`)
       .query({
-        $filter: baseFilter,
-        $orderby: "TimeDim desc",
-        $top: 200,
+        $filter: `IndicatorName eq '${escapedName}'`,
+        $top: 1,
         $format: "json",
       })
       .set("User-Agent", USER_AGENT);
 
-    return res.body.value || [];
-  } catch (err) {
-    // Fallback: try to resolve IndicatorCode from the Indicator catalog using a contains() search
+    code = exactRes.body.value?.[0]?.IndicatorCode;
+  } catch {
+    // ignore
+  }
+
+  // 2) Fallback to contains() search if exact not found
+  if (!code) {
     try {
-      const indicatorRes = await superagent
+      const containsRes = await superagent
         .get(`${WHO_API_BASE}/Indicator`)
         .query({
           $filter: `contains(IndicatorName,'${escapedName}')`,
@@ -84,32 +83,38 @@ export async function getHealthIndicators(
           $format: "json",
         })
         .set("User-Agent", USER_AGENT);
-
-      const indicator = indicatorRes.body.value?.[0];
-      const code: string | undefined = indicator?.IndicatorCode;
-      if (!code) return [];
-
-      const fallbackFilter = [
-        `IndicatorCode eq '${code}'`,
-        country ? `SpatialDim eq '${country}'` : undefined,
-      ]
-        .filter(Boolean)
-        .join(" and ");
-
-      const res2 = await superagent
-        .get(`${WHO_API_BASE}/GHO`)
-        .query({
-          $filter: fallbackFilter,
-          $orderby: "TimeDim desc",
-          $top: 200,
-          $format: "json",
-        })
-        .set("User-Agent", USER_AGENT);
-
-      return res2.body.value || [];
+      code = containsRes.body.value?.[0]?.IndicatorCode;
     } catch {
-      return [];
+      // ignore
     }
+  }
+
+  if (!code) {
+    return [];
+  }
+
+  // 3) Query the indicator-specific endpoint, optionally filter by country and both-sexes
+  const filters: string[] = [];
+  if (country) filters.push(`SpatialDim eq '${country}'`);
+  // Prefer both sexes when present
+  filters.push(`(Dim1 eq 'SEX_BTSX' or Dim1 eq null)`);
+  const filter = filters.length ? filters.join(" and ") : undefined;
+
+  const query: Record<string, string> = {
+    $orderby: "TimeDim desc",
+    $top: "200",
+    $format: "json",
+  };
+  if (filter) query.$filter = filter;
+
+  try {
+    const dataRes = await superagent
+      .get(`${WHO_API_BASE}/${code}`)
+      .query(query)
+      .set("User-Agent", USER_AGENT);
+    return dataRes.body.value || [];
+  } catch (err) {
+    return [];
   }
 }
 
