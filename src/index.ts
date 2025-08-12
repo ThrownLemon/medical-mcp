@@ -42,6 +42,17 @@ function stripHtml(html: string): string {
   return String(html || "").replace(/<[^>]*>/g, "\n").replace(/\n\s*\n+/g, "\n").trim();
 }
 
+function cleanRestrictionText(text: string): string {
+  const lines = String(text || "")
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (lines[0] && /^listing of pharmaceutical benefits/i.test(lines[0])) {
+    lines.shift();
+  }
+  return lines.join("\n");
+}
+
 function formatPrescribingSections(rows: Array<{ pt_position?: number; prescribing_type?: string; prescribing_txt?: string; prscrbg_txt_html?: string }>): string {
   const labelMap: Record<string, string> = {
     CRITERIA: "CRITERIA",
@@ -112,9 +123,106 @@ function pickAllowedParams(endpoint: string, input: Record<string, string> | und
       "program_code",
       "pbs_code",
       "benefit_type_code",
+      "caution_indicator",
+      "note_indicator",
+      "manner_of_administration",
+      "moa_preferred_term",
+      "maximum_prescribable_pack",
+      "maximum_quantity_units",
+      "number_of_repeats",
+      "organisation_id",
+      "manufacturer_code",
+      "pack_size",
+      "pricing_quantity",
+      "pack_not_to_be_broken_ind",
+      "claimed_price",
+      "determined_price",
+      "determined_qty",
+      "safety_net_resupply_rule_days",
+      "safety_net_resup_rule_cnt_ind",
+      "extemporaneous_indicator",
+      "extemporaneous_standard",
+      "doctors_bag_group_id",
+      "section100_only_indicator",
+      "doctors_bag_only_indicator",
+      "brand_substitution_group_id",
+      "brand_substitution_group_code",
+      "continued_dispensing_emergency",
+      "continued_dispensing_flag",
+      "supply_only_indicator",
+      "supply_only_date",
+      "non_effective_date",
+      "weighted_avg_disclosed_price",
+      "originator_brand_indicator",
+      "paper_med_chart_eligible_ind",
+      "elect_med_chart_eligible_ind",
+      "hsptl_med_chart_eligible_ind",
+      "paper_med_chart_duration",
+      "elect_med_chart_duration",
+      "hsptl_chart_acute_duration",
+      "hsptl_chart_sub_acute_duration",
+      "hsptl_chart_chronic_duration",
+      "pack_content",
+      "vial_content",
+      "infusible_indicator",
+      "unit_of_measure",
+      "maximum_amount",
+      "formulary",
+      "water_added_ind",
+      "section_19a_expiry_date",
+      "container_fee_type",
+      "policy_applied_bio_sim_up_flag",
+      "policy_applied_imdq60_flag",
+      "policy_applied_imdq60_base_flag",
+      "policy_applied_indig_phar_flag",
+      "therapeutic_exemption_indicator",
+      "premium_exemption_group_id",
+      "doctors_bag_group_title",
+      "therapeutic_group_id",
+      "therapeutic_group_title",
+      "advanced_notice_date",
+      "supply_only_end_date",
+      "first_listed_date",
+      "legal_unar_ind",
+      "legal_car_ind",
+      "proportional_price",
+      "get_latest_schedule_only",
     ],
-    organisations: ["organisation_id", "name", "schedule_code"],
-    fees: ["program_code", "schedule_code"],
+    organisations: [
+      "organisation_id",
+      "schedule_code",
+      "name",
+      "abn",
+      "street_address",
+      "city",
+      "state",
+      "postcode",
+      "telephone_number",
+      "facsimile_number",
+      "get_latest_schedule_only",
+    ],
+    fees: [
+      "program_code",
+      "schedule_code",
+      "dispensing_fee_ready_prepared",
+      "dispensing_fee_dangerous_drug",
+      "dispensing_fee_extra",
+      "dispensing_fee_extemporaneous",
+      "safety_net_recording_fee_ep",
+      "safety_net_recording_fee_rp",
+      "dispensing_fee_water_added",
+      "container_fee_injectable",
+      "container_fee_other",
+      "gnrl_copay_discount_general",
+      "gnrl_copay_discount_hospital",
+      "con_copay_discount_general",
+      "con_copay_discount_hospital",
+      "efc_diluent_fee",
+      "efc_preparation_fee",
+      "efc_distribution_fee",
+      "acss_imdq60_payment",
+      "acss_payment",
+    ],
     restrictions: [
       "res_code",
       "schedule_code",
@@ -196,6 +304,7 @@ function pickAllowedParams(endpoint: string, input: Record<string, string> | und
       "safety_net_card_issue",
       "increased_discount_limit",
       "safety_net_ctg_contribution",
+      "get_latest_schedule_only",
     ],
     "item-pricing-events": [
       "schedule_code",
@@ -209,6 +318,13 @@ function pickAllowedParams(endpoint: string, input: Record<string, string> | und
       "dispensing_rule_mnem",
       "default_indicator",
       "schedule_code",
+    ],
+    "dispensing-rules": [
+      "schedule_code",
+      "dispensing_rule_mnem",
+      "dispensing_rule_reference",
+      "dispensing_rule_title",
+      "community_pharmacy_indicator",
     ],
     "summary-of-changes": [
       "schedule_code",
@@ -229,6 +345,7 @@ function pickAllowedParams(endpoint: string, input: Record<string, string> | und
       "new_ind",
       "modified_ind",
       "changed_endpoint",
+      "get_latest_schedule_only",
     ],
   };
   const allowed = new Set([...(perEndpoint[endpoint] || []), ...common]);
@@ -350,14 +467,52 @@ server.tool(
   },
 );
 
+// PBS: list or filter dispensing rules
+server.tool(
+  "pbs-list-dispensing-rules",
+  "List PBS dispensing rules optionally filtered by mnemonic/title/reference.",
+  {
+    schedule_code: z.string().optional().describe("Filter by schedule_code (numeric)."),
+    dispensing_rule_mnem: z.string().optional().describe("Filter by dispensing rule mnemonic, e.g. 's90-cp'."),
+    dispensing_rule_reference: z.string().optional().describe("Filter by dispensing rule reference id."),
+    dispensing_rule_title: z.string().optional().describe("Filter by human-readable dispensing rule title."),
+    community_pharmacy_indicator: z
+      .string()
+      .optional()
+      .describe("Filter by community pharmacy applicability (TRUE for community pharmacy)."),
+    limit: z.number().int().optional().default(10).describe("Max rules to return."),
+  },
+  async ({ schedule_code, dispensing_rule_mnem, dispensing_rule_reference, dispensing_rule_title, community_pharmacy_indicator, limit }) => {
+    if (!isValidScheduleCode(schedule_code)) return { content: [{ type: "text", text: `Invalid schedule_code: ${schedule_code}` }] };
+    const params = pickAllowedParams("dispensing-rules", {
+      ...(schedule_code ? { schedule_code } : {}),
+      ...(dispensing_rule_mnem ? { dispensing_rule_mnem } : {}),
+      ...(dispensing_rule_reference ? { dispensing_rule_reference } : {}),
+      ...(dispensing_rule_title ? { dispensing_rule_title } : {}),
+      ...(community_pharmacy_indicator ? { community_pharmacy_indicator } : {}),
+      limit: String(limit),
+      sort: "asc",
+      sort_fields: "dispensing_rule_mnem asc",
+    });
+    const resp = (await pbsGetCached("dispensing-rules", params)) as any;
+    const rows: any[] = resp?.data ?? [];
+    if (!rows.length) return { content: [{ type: "text", text: "No dispensing rules found." }] };
+    const text = rows
+      .slice(0, limit)
+      .map((r) => `${r.dispensing_rule_mnem || "?"} — ${r.dispensing_rule_title || ""}${r.dispensing_rule_reference ? ` [${r.dispensing_rule_reference}]` : ""}`)
+      .join("\n");
+    return { content: [{ type: "text", text }] };
+  },
+);
+
 // PBS: get restrictions (legal text incl. notes/cautions) for an item
 server.tool(
   "pbs-get-restrictions-for-item",
-  "Fetch ordered restriction text (including notes/cautions) for a PBS item code",
+  "Fetch restriction text (legal instrument + notes/cautions) for a PBS item code; auto-uses the item's schedule if not provided.",
   {
-    pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'"),
-    schedule_code: z.string().optional().describe("Optional schedule code; if omitted, resolves latest"),
-    limit: z.number().int().optional().default(1).describe("Number of restriction groups to show (usually 1)"),
+    pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
+    schedule_code: z.string().optional().describe("Optional schedule code; if omitted, uses the item's schedule."),
+    limit: z.number().int().optional().default(1).describe("How many restriction groups to show."),
   },
   async ({ pbs_item_code, schedule_code, limit }) => {
     const code = normalizePbsItemCode(pbs_item_code);
@@ -397,7 +552,7 @@ server.tool(
         const r = restr?.data?.[0];
         // Prefer legal instrument text if available, else schedule text
         const html = r?.li_html_text || r?.schedule_html_text || "";
-        const clean = stripHtml(html);
+        const clean = cleanRestrictionText(stripHtml(html));
         if (clean) {
           sections.push(`Restriction ${resCode}${rel.benefit_type_code ? ` [${rel.benefit_type_code}]` : ""}\n${clean}`);
         }
@@ -413,10 +568,10 @@ server.tool(
 // PBS: prescribers for item
 server.tool(
   "pbs-get-prescribers-for-item",
-  "List prescriber types allowed for a PBS item",
+  "List prescriber types allowed for a PBS item across schedules (e.g., Medical Practitioners).",
   {
-    pbs_item_code: z.string(),
-    schedule_code: z.string().optional(),
+    pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
+    schedule_code: z.string().optional().describe("Optional schedule code filter."),
   },
   async ({ pbs_item_code, schedule_code }) => {
     const code = normalizePbsItemCode(pbs_item_code);
@@ -440,10 +595,10 @@ server.tool(
 // PBS: ATC classification for item
 server.tool(
   "pbs-get-atc-for-item",
-  "Return ATC classification(s) for a PBS item, enriched with ATC descriptions",
+  "Return ATC classification(s) for a PBS item, enriched with ATC descriptions (de-duplicated).",
   {
-    pbs_item_code: z.string(),
-    schedule_code: z.string().optional(),
+    pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
+    schedule_code: z.string().optional().describe("Optional schedule code filter."),
   },
   async ({ pbs_item_code, schedule_code }) => {
     const code = normalizePbsItemCode(pbs_item_code);
@@ -465,7 +620,10 @@ server.tool(
       const atcRow = atcResp?.data?.[0];
       if (atcRow?.atc_description) descByCode.set(code, atcRow.atc_description);
     }
-    const lines = rels.map((r) => `${r.atc_code} — ${descByCode.get(r.atc_code) || ""}${r.atc_priority_pct ? ` (${r.atc_priority_pct}%)` : ""}`);
+    const seen = new Set<string>();
+    const lines = rels
+      .map((r) => `${r.atc_code} — ${descByCode.get(r.atc_code) || ""}${r.atc_priority_pct ? ` (${r.atc_priority_pct}%)` : ""}`)
+      .filter((line) => (seen.has(line) ? false : (seen.add(line), true)));
     return { content: [{ type: "text", text: lines.join("\n") }] };
   },
 );
@@ -473,10 +631,10 @@ server.tool(
 // PBS: AMT mapping for item
 server.tool(
   "pbs-get-amt-mapping",
-  "Return AMT concept mapping (MP/MPP/TPP) for a PBS item",
+  "Return AMT concept mapping (MP/MPUU/MPP/TPP) for a PBS item (de-duplicated).",
   {
-    pbs_item_code: z.string(),
-    schedule_code: z.string().optional(),
+    pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
+    schedule_code: z.string().optional().describe("Optional schedule code filter."),
   },
   async ({ pbs_item_code, schedule_code }) => {
     const code = normalizePbsItemCode(pbs_item_code);
@@ -489,10 +647,10 @@ server.tool(
     const resp = (await pbsGetCached("amt-items", pickAllowedParams("amt-items", { li_item_id: li, limit: "20" }))) as any;
     const rows: any[] = resp?.data ?? [];
     if (!rows.length) return { content: [{ type: "text", text: `No AMT mapping found for ${pbs_item_code}.` }] };
-    const text = rows
-      .map(
-        (r) => `${r.concept_type_code || "?"}: ${r.amt_code || r.non_amt_code || "(no code)"} — ${r.preferred_term || r.pbs_preferred_term || ""}`,
-      )
+    const keyOf = (r: any) => `${r.concept_type_code}|${r.amt_code || r.non_amt_code}|${r.preferred_term || r.pbs_preferred_term}`;
+    const unique = rows.filter((r, idx, arr) => arr.findIndex((x) => keyOf(x) === keyOf(r)) === idx);
+    const text = unique
+      .map((r) => `${r.concept_type_code || "?"}: ${r.amt_code || r.non_amt_code || "(no code)"} — ${r.preferred_term || r.pbs_preferred_term || ""}`)
       .join("\n");
     return { content: [{ type: "text", text }] };
   },
@@ -501,10 +659,10 @@ server.tool(
 // PBS: organisation for item
 server.tool(
   "pbs-get-organisation-for-item",
-  "Return manufacturer/responsible person info for a PBS item",
+  "Return manufacturer/responsible person info for a PBS item (from /organisations).",
   {
-    pbs_item_code: z.string(),
-    schedule_code: z.string().optional(),
+    pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
+    schedule_code: z.string().optional().describe("Optional schedule code filter."),
   },
   async ({ pbs_item_code, schedule_code }) => {
     const code = normalizePbsItemCode(pbs_item_code);
@@ -530,9 +688,9 @@ server.tool(
 // PBS: copayments (latest or given schedule)
 server.tool(
   "pbs-get-copayments",
-  "Return PBS copayment amounts and safety net thresholds",
+  "Return PBS copayment amounts and Safety Net thresholds (latest by default).",
   {
-    schedule_code: z.string().optional(),
+    schedule_code: z.string().optional().describe("Optional schedule code; if omitted, resolves latest."),
   },
   async ({ schedule_code }) => {
     if (!isValidScheduleCode(schedule_code)) {
@@ -565,10 +723,10 @@ server.tool(
 // PBS: price events for item
 server.tool(
   "pbs-get-price-events-for-item",
-  "Return statutory price reduction events for a PBS item",
+  "Return statutory price reduction events for a PBS item (de-duplicated).",
   {
-    pbs_item_code: z.string(),
-    schedule_code: z.string().optional(),
+    pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
+    schedule_code: z.string().optional().describe("Optional schedule code filter."),
   },
   async ({ pbs_item_code, schedule_code }) => {
     const code = normalizePbsItemCode(pbs_item_code);
@@ -584,8 +742,10 @@ server.tool(
     )) as any;
     const rows: any[] = resp?.data ?? [];
     if (!rows.length) return { content: [{ type: "text", text: `No price events for ${pbs_item_code}.` }] };
+    const seen = new Set<string>();
     const text = rows
       .map((r) => `${r.event_type_code || "EVENT"}${r.percentage_applied ? ` — ${r.percentage_applied}%` : ""}`)
+      .filter((line) => (seen.has(line) ? false : (seen.add(line), true)))
       .join("\n");
     return { content: [{ type: "text", text }] };
   },
@@ -594,10 +754,10 @@ server.tool(
 // PBS: program details for item
 server.tool(
   "pbs-get-program-details",
-  "Return program and dispensing rule details for a PBS item",
+  "Return program info and dispensing rules for a PBS item (de-duplicated rules).",
   {
-    pbs_item_code: z.string(),
-    schedule_code: z.string().optional(),
+    pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
+    schedule_code: z.string().optional().describe("Optional schedule code filter."),
   },
   async ({ pbs_item_code, schedule_code }) => {
     const code = normalizePbsItemCode(pbs_item_code);
@@ -615,21 +775,25 @@ server.tool(
     )) as any;
     const rules: any[] = dispResp?.data ?? [];
     const header = prog?.program_title ? `${program} — ${prog.program_title}` : `${program}`;
-    const lines = [header, ...rules.map((r) => `Rule: ${r.dispensing_rule_mnem || "?"}${r.default_indicator === "Y" ? " (default)" : ""}`)];
+    const seenRule = new Set<string>();
+    const ruleLines = rules
+      .map((r) => `Rule: ${r.dispensing_rule_mnem || "?"}${r.default_indicator === "Y" ? " (default)" : ""}`)
+      .filter((line) => (seenRule.has(line) ? false : (seenRule.add(line), true)));
+    const lines = [header, ...ruleLines];
     return { content: [{ type: "text", text: lines.join("\n") }] };
   },
 );
 // Convenience: get PBS items by code, with optional schedule
 server.tool(
   "pbs-get-item",
-  "Fetch PBS item(s) by pbs_item_code and optional schedule_code",
+  "Fetch PBS item(s) by pbs_item_code and optional schedule_code; returns compact summary lines.",
   {
-    pbs_item_code: z.string().describe("PBS item code, e.g. '1234K'"),
+    pbs_item_code: z.string().describe("PBS item code, e.g. '1234K'."),
     schedule_code: z
       .string()
       .optional()
-      .describe("If omitted, API may return across schedules or use latest-only flows"),
-    limit: z.number().int().optional().default(5),
+      .describe("Optional schedule code filter."),
+    limit: z.number().int().optional().default(5).describe("Max items to summarize."),
   },
   async ({ pbs_item_code, schedule_code, limit }) => {
     const code = normalizePbsItemCode(pbs_item_code);
@@ -659,10 +823,12 @@ server.tool(
 // Convenience: search item overview by ODATA filter
 server.tool(
   "pbs-search-item-overview",
-  "Search PBS item-overview using ODATA filter expression (advanced)",
+  "Search PBS item-overview using simple ODATA-like filters (brand_name/li_drug_name/pbs_code, etc.).",
   {
-    filter: z.string().describe("ODATA-like expression (e.g., brand_name eq 'PANADOL' or li_drug_name eq 'PARACETAMOL')"),
-    limit: z.number().int().optional().default(5),
+    filter: z
+      .string()
+      .describe("Equality filters only (e.g., brand_name eq 'PANADOL', li_drug_name eq 'PARACETAMOL', or raw brand_name)."),
+    limit: z.number().int().optional().default(5).describe("Max results to show."),
   },
   async ({ filter, limit }) => {
     // Translate simple ODATA eq/contains into query params the PBS API accepts
@@ -696,16 +862,13 @@ server.tool(
 );
 server.tool(
   "pbs-search",
-  "Query Australia's PBS public API (rate-limited; one request per ~20s across all users)",
+  "Query Australia's PBS public API (rate-limited; ~20s between calls).",
   {
     endpoint: z
-      .enum(["schedules", "items", "item-overview", "organisations", "fees"]) // common endpoints; still allow manual advanced via pbs-search if needed
+      .enum(["schedules", "items", "item-overview", "organisations", "fees", "dispensing-rules"]) // include dispensing-rules
       .or(z.string())
       .describe("PBS endpoint under base, e.g. 'schedules', 'items', 'item-overview'"),
-    params: z
-      .record(z.string())
-      .optional()
-      .describe("Optional query parameters like scheduleCode, pbsItemCode, program"),
+    params: z.record(z.string()).optional().describe("Query parameters passed through (validated per endpoint)."),
   },
   async ({ endpoint, params }) => {
     try {
@@ -749,12 +912,12 @@ server.tool(
 // PBS: summary of changes across schedules
 server.tool(
   "pbs-summary-of-changes",
-  "Summarize changes between schedules for a given endpoint/table",
+  "Summarize changes between schedules for a given endpoint/table (INSERT/UPDATE/DELETE).",
   {
-    schedule_code: z.string().optional().describe("Target schedule code; if omitted uses latest"),
-    source_schedule_code: z.string().optional().describe("Source schedule (previous); if omitted, previous of latest is used if available"),
-    changed_endpoint: z.string().optional().describe("Endpoint/table to filter by, e.g. 'items'"),
-    limit: z.number().int().optional().default(10),
+    schedule_code: z.string().optional().describe("Target schedule code; if omitted uses latest."),
+    source_schedule_code: z.string().optional().describe("Source schedule (previous); inferred if omitted."),
+    changed_endpoint: z.string().optional().describe("Endpoint/table to filter by, e.g. 'items'."),
+    limit: z.number().int().optional().default(10).describe("Max change rows to include."),
   },
   async ({ schedule_code, source_schedule_code, changed_endpoint, limit }) => {
     if (!isValidScheduleCode(schedule_code) || !isValidScheduleCode(source_schedule_code)) {
