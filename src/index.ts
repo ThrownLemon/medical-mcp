@@ -23,6 +23,69 @@ const server = new McpServer({
   },
 });
 
+// PBS helpers: whitelist common params per endpoint and format results
+function pickAllowedParams(endpoint: string, input: Record<string, string> | undefined): Record<string, string> {
+  if (!input) return {};
+  const common = ["limit", "page", "sort", "fields", "filter"]; // generic query controls supported by PBS
+  const perEndpoint: Record<string, string[]> = {
+    schedules: [
+      "schedule_code",
+      "revision_number",
+      "effective_date",
+      "effective_month",
+      "effective_year",
+      "get_latest_schedule_only",
+    ],
+    items: [
+      "schedule_code",
+      "li_item_id",
+      "drug_name",
+      "li_drug_name",
+      "li_form",
+      "schedule_form",
+      "brand_name",
+      "program_code",
+      "pbs_code",
+      "benefit_type_code",
+      "pack_size",
+      "pricing_quantity",
+    ],
+    "item-overview": [
+      "schedule_code",
+      "li_item_id",
+      "drug_name",
+      "li_drug_name",
+      "li_form",
+      "schedule_form",
+      "brand_name",
+      "program_code",
+      "pbs_code",
+      "benefit_type_code",
+    ],
+    organisations: ["organisation_id", "name", "schedule_code"],
+    fees: ["program_code", "schedule_code"],
+  };
+  const allowed = new Set([...(perEndpoint[endpoint] || []), ...common]);
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (allowed.has(key)) out[key] = value;
+  }
+  return out;
+}
+
+function summarizeItems(items: any[], max: number): string {
+  const lines: string[] = [];
+  items.slice(0, max).forEach((it: any, idx: number) => {
+    const code = it.pbs_code ?? it.pbsItemCode ?? "";
+    const brand = it.brand_name ?? it.brandName ?? "";
+    const drug = it.li_drug_name ?? it.drug_name ?? it.drugName ?? "";
+    const schedule = it.schedule_code ?? "";
+    const pack = it.pack_size ?? it.packSize ?? "";
+    lines.push(`${idx + 1}. ${brand || drug || code || "Item"}${code ? ` [${code}]` : ""}${schedule ? ` (schedule ${schedule})` : ""}${pack ? ` — pack ${pack}` : ""}`);
+  });
+  return lines.join("\n");
+}
+
 // MCP Tools
 server.tool(
   "search-drugs",
@@ -105,11 +168,19 @@ server.tool(
       .describe("If true, only returns the latest schedule_code"),
   },
   async ({ limit, latest_only }) => {
-    const params: Record<string, string> = { limit: String(limit) };
+    const params: Record<string, string> = pickAllowedParams("schedules", { limit: String(limit) });
     if (latest_only) params.get_latest_schedule_only = "true";
     const data = (await pbsGet("schedules", params)) as any;
-    const text = JSON.stringify(data).slice(0, 2000);
-    return { content: [{ type: "text", text }] };
+    const rows = data?.data ?? [];
+    const header = `PBS schedules (showing ${Math.min(rows.length, limit)} of ${data?._meta?.total_records ?? rows.length})`;
+    const body = rows
+      .slice(0, limit)
+      .map(
+        (r: any, i: number) =>
+          `${i + 1}. ${r.effective_year}-${r.effective_month} — schedule_code ${r.schedule_code} (status: ${r.publication_status})`,
+      )
+      .join("\n");
+    return { content: [{ type: "text", text: `${header}\n${body}` }] };
   },
 );
 
@@ -126,11 +197,20 @@ server.tool(
     limit: z.number().int().optional().default(5),
   },
   async ({ pbs_item_code, schedule_code, limit }) => {
-    const params: Record<string, string> = { pbs_item_code, limit: String(limit) };
+    // Map pbs_item_code input to PBS API's expected 'pbs_code' query param
+    const params: Record<string, string> = pickAllowedParams("items", {
+      pbs_code: pbs_item_code,
+      limit: String(limit),
+    });
+    if (!params.pbs_code) {
+      return { content: [{ type: "text", text: "pbs_item_code is required." }] };
+    }
     if (schedule_code) params.schedule_code = schedule_code;
     const data = (await pbsGet("items", params)) as any;
-    const text = JSON.stringify(data).slice(0, 2000);
-    return { content: [{ type: "text", text }] };
+    const rows = data?.data ?? [];
+    if (!rows.length) return { content: [{ type: "text", text: `No PBS items found for code ${pbs_item_code}.` }] };
+    const summary = summarizeItems(rows, limit);
+    return { content: [{ type: "text", text: summary }] };
   },
 );
 
@@ -139,14 +219,37 @@ server.tool(
   "pbs-search-item-overview",
   "Search PBS item-overview using ODATA filter expression (advanced)",
   {
-    filter: z.string().describe("ODATA filter, e.g. atc_code eq 'A10BA02'"),
+    filter: z.string().describe("ODATA-like expression (e.g., brand_name eq 'PANADOL' or li_drug_name eq 'PARACETAMOL')"),
     limit: z.number().int().optional().default(5),
   },
   async ({ filter, limit }) => {
-    const params: Record<string, string> = { limit: String(limit), filter };
-    const data = (await pbsGet("item-overview", params)) as any;
-    const text = JSON.stringify(data).slice(0, 2000);
-    return { content: [{ type: "text", text }] };
+    // Translate simple ODATA eq/contains into query params the PBS API accepts
+    const params: Record<string, string> = { limit: String(limit) };
+    const eqMatch = filter.match(/^\s*([A-Za-z0-9_]+)\s+eq\s+'([^']+)'\s*$/);
+    const containsMatch = filter.match(/^\s*contains\(\s*([A-Za-z0-9_]+)\s*,\s*'([^']+)'\s*\)\s*$/);
+    if (eqMatch) {
+      params[eqMatch[1]] = eqMatch[2];
+    } else if (containsMatch) {
+      // PBS API doesn't support contains(), approximate by direct equality
+      params[containsMatch[1]] = containsMatch[2];
+    } else if (filter) {
+      // Fallback: assume brand_name provided directly
+      params["brand_name"] = filter;
+    }
+    try {
+      const data = (await pbsGet("item-overview", pickAllowedParams("item-overview", params))) as any;
+      const rows = data?.data ?? [];
+      if (!rows.length) return { content: [{ type: "text", text: `No PBS item-overview results for filter: ${filter}` }] };
+      const summary = summarizeItems(rows, limit);
+      return { content: [{ type: "text", text: summary }] };
+    } catch (err: any) {
+      // Fallback to items endpoint if item-overview rejects the query
+      const data = (await pbsGet("items", pickAllowedParams("items", params))) as any;
+      const rows = data?.data ?? [];
+      if (!rows.length) return { content: [{ type: "text", text: `No PBS items for filter: ${filter}` }] };
+      const summary = summarizeItems(rows, limit);
+      return { content: [{ type: "text", text: summary }] };
+    }
   },
 );
 server.tool(
@@ -164,16 +267,30 @@ server.tool(
   },
   async ({ endpoint, params }) => {
     try {
-      const result = await pbsGet(endpoint, params);
-      const preview = typeof result === "string" ? result.slice(0, 2000) : JSON.stringify(result).slice(0, 2000);
-      return {
-        content: [
-          {
-            type: "text",
-            text: preview || "No content returned",
-          },
-        ],
-      };
+      const safeParams = pickAllowedParams(endpoint, params);
+      const result = (await pbsGet(endpoint, safeParams)) as any;
+      const rows = result?.data ?? [];
+      if (!rows.length) return { content: [{ type: "text", text: `No results from /${endpoint}` }] };
+      let text = "";
+      if (endpoint === "items" || endpoint === "item-overview") {
+        text = summarizeItems(rows, Math.min(5, rows.length));
+      } else if (endpoint === "schedules") {
+        text = rows
+          .slice(0, 5)
+          .map(
+            (r: any, i: number) =>
+              `${i + 1}. ${r.effective_year}-${r.effective_month} — schedule_code ${r.schedule_code} (status: ${r.publication_status})`,
+          )
+          .join("\n");
+      } else if (endpoint === "organisations") {
+        text = rows
+          .slice(0, 5)
+          .map((r: any, i: number) => `${i + 1}. ${r.name}${r.organisation_id ? ` (id ${r.organisation_id})` : ""}`)
+          .join("\n");
+      } else if (endpoint === "fees") {
+        text = JSON.stringify(rows[0]).slice(0, 500);
+      }
+      return { content: [{ type: "text", text: text || JSON.stringify(rows[0]).slice(0, 500) }] };
     } catch (error: any) {
       return {
         content: [
@@ -204,6 +321,55 @@ server.tool(
       .map((i, idx) => `${idx + 1}. ${i.name} (code: ${i.code})`)
       .join("\n");
     return { content: [{ type: "text", text }] };
+  },
+);
+
+// Convenience: get fees for a PBS item code (resolves program_code then looks up fees)
+server.tool(
+  "pbs-get-fees-for-item",
+  "Fetch PBS fees by resolving an item's program_code, optionally for a specific schedule",
+  {
+    pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'"),
+    schedule_code: z.string().optional().describe("Optional schedule code, e.g. '3773'"),
+  },
+  async ({ pbs_item_code, schedule_code }) => {
+    // First, get the item's program_code (and schedule_code if provided)
+    const itemParams: Record<string, string> = pickAllowedParams("items", {
+      pbs_code: pbs_item_code,
+      limit: "1",
+    });
+    if (schedule_code) itemParams.schedule_code = schedule_code;
+    const itemResp = (await pbsGet("items", itemParams)) as any;
+    const item = itemResp?.data?.[0];
+    if (!item) {
+      return { content: [{ type: "text", text: `No PBS item found for code ${pbs_item_code}.` }] };
+    }
+    const programCode = item.program_code;
+    const schedule = schedule_code || item.schedule_code;
+    if (!programCode) {
+      return { content: [{ type: "text", text: `Item ${pbs_item_code} has no program_code available.` }] };
+    }
+    const feeParams: Record<string, string> = pickAllowedParams("fees", {
+      program_code: String(programCode),
+      ...(schedule ? { schedule_code: String(schedule) } : {}),
+      limit: "1",
+    });
+    const feeResp = (await pbsGet("fees", feeParams)) as any;
+    const fee = feeResp?.data?.[0];
+    if (!fee) {
+      return { content: [{ type: "text", text: `No fees found for program ${programCode}${schedule ? ` in schedule ${schedule}` : ""}.` }] };
+    }
+    const lines = [
+      `Program: ${fee.program_code}${schedule ? ` | Schedule: ${schedule}` : ""}`,
+      fee.dispensing_fee_ready_prepared != null ? `Dispensing fee (ready prepared): ${fee.dispensing_fee_ready_prepared}` : "",
+      fee.dispensing_fee_dangerous_drug != null ? `Dispensing fee (dangerous drug): ${fee.dispensing_fee_dangerous_drug}` : "",
+      fee.dispensing_fee_extemporaneous != null ? `Dispensing fee (extemporaneous): ${fee.dispensing_fee_extemporaneous}` : "",
+      fee.safety_net_recording_fee_ep != null ? `Safety net recording fee (EP): ${fee.safety_net_recording_fee_ep}` : "",
+      fee.safety_net_recording_fee_rp != null ? `Safety net recording fee (RP): ${fee.safety_net_recording_fee_rp}` : "",
+      fee.container_fee_injectable != null ? `Container fee (injectable): ${fee.container_fee_injectable}` : "",
+      fee.container_fee_other != null ? `Container fee (other): ${fee.container_fee_other}` : "",
+    ].filter(Boolean);
+    return { content: [{ type: "text", text: lines.join("\n") }] };
   },
 );
 

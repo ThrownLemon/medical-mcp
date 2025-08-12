@@ -1,10 +1,15 @@
 # Medical MCP Server
 
-A Model Context Protocol (MCP) server that provides comprehensive medical information by querying multiple authoritative medical APIs including FDA, WHO, PubMed, and RxNorm.
+A Model Context Protocol (MCP) server (SSE transport) that provides comprehensive medical information by querying multiple authoritative sources: FDA, WHO, PubMed, RxNorm, Google Scholar (with optional SerpAPI), and Australia's PBS Public API.
 
 ## Features
 
-This MCP server offers five specialized tools for querying medical information from reliable sources:
+This MCP server offers a set of tools organized by capability:
+ - Drug info (FDA)
+ - Drug nomenclature (RxNorm)
+ - Health statistics (WHO) + discovery helper
+ - Medical literature (PubMed, Google Scholar with optional SerpAPI)
+ - Australia PBS lookups (schedules, items, item-overview, fees)
 
 ### 💊 Drug Information Tools
 
@@ -160,20 +165,70 @@ Input:
 
 - `query` (string): keyword to search
 
-#### `pbs-search`
+#### `pbs-list-schedules`
 
-Query Australia's public PBS API. Rate-limited to about one request per 20 seconds across all users.
+List PBS schedules (optionally only the latest schedule).
 
 Input:
 
-- `endpoint` (string): path under `PBS_API_BASE` (e.g., `api/v3/schedules`, `api/v3/items`)
-- `params` (object, optional): filter params like `scheduleCode`, `pbsItemCode`, `program`
+- `limit` (number, default 5)
+- `latest_only` (boolean, default true): if true, returns only the latest schedule code
 
-Environment variables:
+Output: compact lines like `2025-AUGUST — schedule_code 3773 (status: PUBLISHED)`
+
+#### `pbs-get-item`
+
+Fetch PBS item(s) by `pbs_item_code` and optional `schedule_code`.
+
+Input:
+
+- `pbs_item_code` (string): e.g. `12210P`
+- `schedule_code` (string, optional)
+- `limit` (number, default 5)
+
+Output: concise summary lines like `Panadol [12210P] (schedule 4489) — pack 10`
+
+#### `pbs-search-item-overview`
+
+Search PBS item-overview using a simple ODATA-like filter. Supports:
+
+- Equality: `brand_name eq 'PANADOL'`, `li_drug_name eq 'PARACETAMOL'`
+- `contains(field, 'VALUE')` is approximated via equality if needed
+
+If the API rejects the filter, the tool falls back to `/items` with the same params and still summarizes results.
+
+Input:
+
+- `filter` (string): e.g., `brand_name eq 'PANADOL'`
+- `limit` (number, default 5)
+
+#### `pbs-search`
+
+Query Australia's public PBS API (rate-limited by PBS; roughly one request per ~20s across all users).
+
+Input:
+
+- `endpoint` (string): one of `schedules`, `items`, `item-overview`, `organisations`, `fees`
+- `params` (object, optional): common filter params are accepted and validated per endpoint (e.g., `pbs_code`, `brand_name`, `li_drug_name`, `schedule_code`, `program_code`, `limit`, `page`, `sort`, `fields`)
+
+Output: readable summaries per endpoint (items and item-overview summarized like `Brand [PBS_CODE] (schedule X) — pack Y`).
+
+#### `pbs-get-fees-for-item`
+
+Fetch PBS fees by resolving an item's `program_code`, optionally for a specific `schedule_code`.
+
+Input:
+
+- `pbs_item_code` (string): e.g. `12210P`
+- `schedule_code` (string, optional): if omitted, uses the schedule of the resolved item
+
+Output: fee lines, e.g., `Dispensing fee (ready prepared): 8.88`, etc.
+
+Environment variables (AU helpers):
 
 - `DEFAULT_COUNTRY_ISO3` (optional): e.g., `AUS` to default WHO queries to Australia when no country provided
-- `PBS_API_BASE` (required for PBS): set to the PBS base, e.g. `https://data-api.health.gov.au/pbs/api/v3` (see PBS API docs)
-- `PBS_SUBSCRIPTION_KEY` (optional): defaults to the public key from the PBS docs if not provided
+- `PBS_API_BASE` (required for PBS): e.g. `https://data-api.health.gov.au/pbs/api/v3`
+- `PBS_SUBSCRIPTION_KEY` (optional): public key per docs or your own
 
 ## Installation
 
@@ -210,7 +265,10 @@ Environment variables:
 
 - `PORT` or `MCP_PORT` (default: `3000`)
 - `HOST` (default: `127.0.0.1`)
-- `SERPAPI_KEY` (optional): If set, Google Scholar tool prefers SerpAPI and falls back to scraping
+- `SERPAPI_KEY` (optional): Use SerpAPI for Google Scholar with fallback to scraping
+- `DEFAULT_COUNTRY_ISO3` (optional): e.g. `AUS` to default WHO queries to Australia
+- `PBS_API_BASE` (required for PBS): e.g. `https://data-api.health.gov.au/pbs/api/v3`
+- `PBS_SUBSCRIPTION_KEY` (optional): PBS subscription key header if required for your environment
 
 Once started:
 
@@ -271,6 +329,42 @@ Here are some example queries you can make with this MCP server:
 }
 ```
 
+#### PBS: List schedules (latest only)
+
+```json
+{
+  "tool": "pbs-list-schedules",
+  "arguments": { "limit": 1, "latest_only": true }
+}
+```
+
+#### PBS: Find PANADOL in item-overview
+
+```json
+{
+  "tool": "pbs-search-item-overview",
+  "arguments": { "filter": "brand_name eq 'PANADOL'", "limit": 3 }
+}
+```
+
+#### PBS: Get item by PBS item code
+
+```json
+{
+  "tool": "pbs-get-item",
+  "arguments": { "pbs_item_code": "12210P", "limit": 2 }
+}
+```
+
+#### PBS: Fees for item
+
+```json
+{
+  "tool": "pbs-get-fees-for-item",
+  "arguments": { "pbs_item_code": "12210P" }
+}
+```
+
 #### Search Drug Nomenclature
 
 ```json
@@ -317,6 +411,14 @@ This MCP server integrates with the following medical APIs:
 - Citation and publication information
 - **Note**: Uses Puppeteer for browser automation with anti-detection measures
 - Optional SerpAPI integration via `SERPAPI_KEY` to improve reliability
+
+### Australian PBS Public API
+
+- `GET /api/v3/schedules` — Schedule metadata (latest schedule code, effective dates)
+- `GET /api/v3/items` — Item listings (filter by `pbs_code`, `brand_name`, `li_drug_name`, `schedule_code`, etc.)
+- `GET /api/v3/item-overview` — Extended item view (filtered similarly)
+- `GET /api/v3/organisations` — Manufacturer/responsible party lookup
+- `GET /api/v3/fees` — Fees by `program_code` (and optional `schedule_code`)
 
 ## Data Sources
 
