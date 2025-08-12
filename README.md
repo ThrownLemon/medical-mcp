@@ -173,15 +173,25 @@ npm run build
 
 ## Usage
 
-### Running the Server
+### Running the Server (SSE)
 
-Start the MCP server:
+Start the MCP server (SSE transport):
 
 ```bash
-npm start
+npm run build && node build/index.js
 ```
 
-The server runs on stdio and can be connected to any MCP-compatible client.
+Environment variables:
+
+- `PORT` or `MCP_PORT` (default: `3000`)
+- `HOST` (default: `127.0.0.1`)
+
+Once started:
+
+- SSE stream: `GET http://HOST:PORT/sse`
+- Message POST endpoint: `POST http://HOST:PORT/messages?sessionId=...`
+
+Point your MCP client to the `/sse` endpoint (the server emits an `endpoint` event with the POST URL including `sessionId`).
 
 ### Example Queries
 

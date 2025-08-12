@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import {
   getDrugByNDC,
@@ -430,9 +431,56 @@ server.tool(
 );
 
 async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("Medical MCP Server running on stdio");
+  const port = Number(process.env.PORT || process.env.MCP_PORT || 3000);
+  const host = process.env.HOST || "127.0.0.1";
+
+  const transports = new Map<string, SSEServerTransport>();
+
+  const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    try {
+      const reqUrl = new URL(req.url ?? "/", `http://${req.headers.host}`);
+
+      // Establish SSE stream
+      if (req.method === "GET" && reqUrl.pathname === "/sse") {
+        const transport = new SSEServerTransport("/messages", res);
+        const sessionId = transport.sessionId;
+        transports.set(sessionId, transport);
+        transport.onclose = () => transports.delete(sessionId);
+        await server.connect(transport);
+        return;
+      }
+
+      // Receive client JSON-RPC messages
+      if (req.method === "POST" && reqUrl.pathname === "/messages") {
+        const sessionId = reqUrl.searchParams.get("sessionId");
+        if (!sessionId) {
+          res.statusCode = 400;
+          res.end("Missing sessionId parameter");
+          return;
+        }
+        const transport = transports.get(sessionId);
+        if (!transport) {
+          res.statusCode = 404;
+          res.end("Session not found");
+          return;
+        }
+        await transport.handlePostMessage(req as any, res);
+        return;
+      }
+
+      res.statusCode = 404;
+      res.end("Not found");
+    } catch (error) {
+      res.statusCode = 500;
+      res.end("Internal server error");
+    }
+  });
+
+  httpServer.listen(port, host, () => {
+    console.error(`Medical MCP SSE server listening at http://${host}:${port}`);
+    console.error(`SSE endpoint: GET http://${host}:${port}/sse`);
+    console.error(`POST messages endpoint: POST http://${host}:${port}/messages?sessionId=...`);
+  });
 }
 
 main().catch((error) => {
