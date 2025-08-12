@@ -438,6 +438,28 @@ server.tool(
     }
   },
 );
+
+// PBS: get the latest schedule_code (simple helper for clients)
+server.tool(
+  "pbs-get-latest-schedule",
+  "Resolve the current latest PBS schedule_code for reuse by other calls.",
+  {},
+  async () => {
+    try {
+      const code = await resolveLatestScheduleCode();
+      return { content: [{ type: "text", text: String(code) }] };
+    } catch (error: any) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error resolving latest schedule_code: ${error?.message || String(error)}`,
+          },
+        ],
+      };
+    }
+  },
+);
 // Convenience: list latest PBS schedules
 server.tool(
   "pbs-list-schedules",

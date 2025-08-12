@@ -33,19 +33,118 @@ export async function searchDrugs(
 }
 
 export async function getDrugByNDC(ndc: string): Promise<DrugLabel | null> {
-  try {
-    const res = await superagent
-      .get(`${FDA_API_BASE}/drug/label.json`)
-      .query({
-        search: `openfda.product_ndc:${ndc}`,
-        limit: 1,
-      })
-      .set("User-Agent", USER_AGENT);
+  // Normalize common NDC formats and try multiple searchable fields.
+  const normalizeNdc = (
+    input: string,
+  ): {
+    raw: string;
+    hyphen: string;
+    digits10: string;
+    digits11: string;
+    productHyphen: string;
+    hyphen10Candidates: string[];
+  } => {
+    const raw = String(input || "").trim();
+    const digits = raw.replace(/[^0-9]/g, "");
+    // Best-effort hyphenation detection: prefer 5-4-2 (labeler-product-package) when 11 digits
+    let hyphen = raw;
+    if (/^\d{11}$/.test(digits)) {
+      hyphen = `${digits.slice(0, 5)}-${digits.slice(5, 9)}-${digits.slice(9)}`;
+    } else if (/^\d{10}$/.test(digits)) {
+      // 10-digit could be 4-4-2, 5-3-2, 5-4-1. We will leave as raw; FDA often indexes 10-digit without hyphens too
+      hyphen = raw.includes("-") ? raw : raw;
+    } else if (/^\d{4,5}-\d{3,4}-\d{1,2}$/.test(raw)) {
+      hyphen = raw;
+    }
+    const digits10 = /^\d{10}$/.test(digits) ? digits : "";
+    const digits11 = /^\d{11}$/.test(digits) ? digits : "";
+    // If we have a 3-segment hyphenated value, derive the 2-segment product code (labeler-product)
+    let productHyphen = "";
+    const m = hyphen.match(/^(\d{4,5}-\d{3,4})-\d{1,2}$/);
+    if (m) productHyphen = m[1];
+    // Derive 10-digit hyphen patterns if we have 10 digits only
+    const hyphen10Candidates: string[] = [];
+    if (digits10) {
+      const d = digits10;
+      // 4-4-2
+      hyphen10Candidates.push(`${d.slice(0, 4)}-${d.slice(4, 8)}-${d.slice(8)}`);
+      // 5-3-2
+      hyphen10Candidates.push(`${d.slice(0, 5)}-${d.slice(5, 8)}-${d.slice(8)}`);
+      // 5-4-1
+      hyphen10Candidates.push(`${d.slice(0, 5)}-${d.slice(5, 9)}-${d.slice(9)}`);
+    }
+    return { raw, hyphen, digits10, digits11, productHyphen, hyphen10Candidates };
+  };
 
-    return res.body.results?.[0] || null;
-  } catch (error) {
-    return null;
+  const { raw, hyphen, digits10, digits11, productHyphen, hyphen10Candidates } = normalizeNdc(ndc);
+
+  // Try a sequence of exact field matches with quotes for reliability
+  const attempts: Array<{ field: string; value: string }> = [];
+  const pushAttempt = (field: string, value?: string) => {
+    const v = (value || "").trim();
+    if (!v) return;
+    const key = `${field}|${v}`;
+    // de-duplicate
+    if (!attempts.find((a) => `${a.field}|${a.value}` === key)) {
+      attempts.push({ field, value: v });
+    }
+  };
+  // Prefer hyphenated first (most reliable)
+  [hyphen, ...hyphen10Candidates, productHyphen, raw, digits10, digits11].forEach((v) => {
+    if (v) pushAttempt("openfda.product_ndc", v);
+  });
+  [hyphen, ...hyphen10Candidates, raw, digits10, digits11].forEach((v) => {
+    if (v) pushAttempt("openfda.package_ndc", v);
+  });
+
+  for (const { field, value } of attempts) {
+    try {
+      const res = await superagent
+        .get(`${FDA_API_BASE}/drug/label.json`)
+        .query({
+          search: `${field}:"${value}"`,
+          limit: 1,
+        })
+        .set("User-Agent", USER_AGENT);
+      const found = res.body.results?.[0] || null;
+      if (found) return found;
+    } catch (e) {
+      // continue to next attempt
+    }
+    // Unquoted fallback
+    try {
+      const res = await superagent
+        .get(`${FDA_API_BASE}/drug/label.json`)
+        .query({
+          search: `${field}:${value}`,
+          limit: 1,
+        })
+        .set("User-Agent", USER_AGENT);
+      const found = res.body.results?.[0] || null;
+      if (found) return found;
+    } catch (e) {
+      // continue to next attempt
+    }
   }
+  // Final OR-combined attempt across a few common forms
+  const orParts = [hyphen, ...hyphen10Candidates, productHyphen, raw, digits10, digits11]
+    .filter(Boolean)
+    .flatMap((v) => [
+      `openfda.product_ndc:${v}`,
+      `openfda.package_ndc:${v}`,
+    ]);
+  if (orParts.length) {
+    try {
+      const res = await superagent
+        .get(`${FDA_API_BASE}/drug/label.json`)
+        .query({ search: orParts.join("+OR+"), limit: 1 })
+        .set("User-Agent", USER_AGENT);
+      return res.body.results?.[0] || null;
+    } catch (e) {
+      // ignore
+    }
+  }
+  return null;
 }
 
 // WHO API functions
