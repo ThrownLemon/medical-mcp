@@ -261,14 +261,25 @@ Start the MCP server (SSE transport):
 npm run build && node build/index.js
 ```
 
-Environment variables:
+Environment variables (see also `.env.example`):
 
 - `PORT` or `MCP_PORT` (default: `3000`)
 - `HOST` (default: `127.0.0.1`)
 - `SERPAPI_KEY` (optional): Use SerpAPI for Google Scholar with fallback to scraping
 - `DEFAULT_COUNTRY_ISO3` (optional): e.g. `AUS` to default WHO queries to Australia
 - `PBS_API_BASE` (required for PBS): e.g. `https://data-api.health.gov.au/pbs/api/v3`
-- `PBS_SUBSCRIPTION_KEY` (optional): PBS subscription key header if required for your environment
+- `PBS_SUBSCRIPTION_KEY` (required by API gateway): provide your key. The public docs mention an unregistered key `2384af7c667342ceb5a736fe29f1dc6b`, but it is not baked into this codebase; set via env.
+- `PBS_MIN_INTERVAL_MS` (default: `20000`): minimum delay between PBS requests (global throttle)
+- `PBS_CACHE_TTL_MS` (default: `300000`): PBS GET cache TTL in ms
+- `USER_AGENT` (default: `medical-mcp/1.0`)
+- Optional API base overrides: `FDA_API_BASE`, `WHO_API_BASE`, `RXNAV_API_BASE`, `PUBMED_API_BASE`, `GOOGLE_SCHOLAR_API_BASE`
+
+Config constants
+
+These are read from env via `src/constants.ts`:
+
+- `PBS_API_BASE`
+- `DEFAULT_COUNTRY_ISO3`
 
 Once started:
 

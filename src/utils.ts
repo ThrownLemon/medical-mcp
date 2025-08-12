@@ -14,6 +14,7 @@ import {
   RXNAV_API_BASE,
   USER_AGENT,
   WHO_API_BASE,
+  PBS_API_BASE,
 } from "./constants.js";
 
 export async function searchDrugs(
@@ -460,10 +461,10 @@ export async function pbsGet(
   endpoint: string,
   queryParams?: Record<string, string | number | boolean>,
 ): Promise<unknown> {
-  const base = process.env.PBS_API_BASE;
+  const base = PBS_API_BASE;
   if (!base) {
     throw new Error(
-      "PBS_API_BASE is not set. Please set the base URL for the PBS public API (e.g., .../api/v3).",
+      "PBS_API_BASE is not set. Please set the base URL for the PBS public API (e.g., https://data-api.health.gov.au/pbs/api/v3).",
     );
   }
 
@@ -483,8 +484,10 @@ export async function pbsGet(
     .replace(/^api\/v3\//, "");
   const url = `${normalizeBaseUrl(base)}/${normalizedEndpoint}`;
   const req = superagent.get(url).query(queryParams || {}).set("User-Agent", USER_AGENT);
-  const subKey = process.env.PBS_SUBSCRIPTION_KEY || "2384af7c667342ceb5a736fe29f1dc6b";
-  if (subKey) {
+  const subKey = process.env.PBS_SUBSCRIPTION_KEY;
+  if (!subKey) {
+    console.warn("Warning: PBS_SUBSCRIPTION_KEY is not set; requests may be rejected by the API.");
+  } else {
     req.set("Subscription-Key", subKey);
   }
   const res = await req.timeout({
