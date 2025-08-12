@@ -263,7 +263,7 @@ npm run build && node build/index.js
 
 Environment variables (see also `.env.example`):
 
-- `PORT` or `MCP_PORT` (default: `3000`)
+- `PORT` (default: `3000`)
 - `HOST` (default: `127.0.0.1`)
 - `SERPAPI_KEY` (optional): Use SerpAPI for Google Scholar with fallback to scraping
 - `DEFAULT_COUNTRY_ISO3` (optional): e.g. `AUS` to default WHO queries to Australia

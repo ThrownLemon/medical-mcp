@@ -7,4 +7,4 @@ export const USER_AGENT = process.env.USER_AGENT || "medical-mcp/1.0";
 
 // PBS configuration
 export const PBS_API_BASE = process.env.PBS_API_BASE || "https://data-api.health.gov.au/pbs/api/v3"; // e.g. https://data-api.health.gov.au/pbs/api/v3
-export const DEFAULT_COUNTRY_ISO3 = process.env.DEFAULT_COUNTRY_ISO3; // e.g. AUS
+export const DEFAULT_COUNTRY_ISO3 = process.env.DEFAULT_COUNTRY_ISO3 || "AUS"; // e.g. AUS

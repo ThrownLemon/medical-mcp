@@ -1379,7 +1379,7 @@ server.tool(
 );
 
 async function main() {
-  const port = Number(process.env.PORT || process.env.MCP_PORT || 3000);
+  const port = Number(process.env.PORT|| 3000);
   const host = process.env.HOST || "127.0.0.1";
 
   const transports = new Map<string, SSEServerTransport>();
