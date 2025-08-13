@@ -1,0 +1,27 @@
+# Smithery configuration file: https://smithery.ai/docs/build/project-config
+
+startCommand:
+  type: http
+  configSchema:
+    # JSON Schema defining the configuration options for the MCP.
+    type: object
+    required:
+      - pbsApiBase
+    properties:
+      pbsApiBase:
+        type: string
+        description: Base URL for PBS API
+      pbsSubscriptionKey:
+        type: string
+        description: PBS subscription key (optional)
+      serpApiKey:
+        type: string
+        description: SerpAPI key for Google Scholar (optional)
+      defaultCountryIso3:
+        type: string
+        description: Default country ISO3 code for WHO queries (optional)
+  exampleConfig:
+    pbsApiBase: https://data-api.health.gov.au/pbs/api/v3
+    pbsSubscriptionKey: 2384af7c667342ceb5a736fe29f1dc6b
+    serpApiKey: your-serpapi-key
+    defaultCountryIso3: AUS
