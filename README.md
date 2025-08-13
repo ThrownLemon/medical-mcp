@@ -1,5 +1,6 @@
 # Medical MCP Server
 
+[![smithery badge](https://smithery.ai/badge/@ThrownLemon/medical-mcp)](https://smithery.ai/server/@ThrownLemon/medical-mcp)
 A Model Context Protocol (MCP) server (SSE transport) that provides comprehensive medical information by querying multiple authoritative sources: FDA, WHO, PubMed, RxNorm, Google Scholar (with optional SerpAPI), and Australia's PBS Public API.
 
 ## Features
@@ -231,6 +232,14 @@ Environment variables (AU helpers):
 - `PBS_SUBSCRIPTION_KEY` (optional): public key per docs or your own
 
 ## Installation
+
+### Installing via Smithery
+
+To install Medical Information Server for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@ThrownLemon/medical-mcp):
+
+```bash
+npx -y @smithery/cli install @ThrownLemon/medical-mcp --client claude
+```
 
 1. Clone this repository:
 
