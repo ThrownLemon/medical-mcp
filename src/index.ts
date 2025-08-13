@@ -4,6 +4,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+// Note: Manual CORS implementation below, cors package kept for future use
 import {
   getDrugByNDC,
   getHealthIndicators,
@@ -31,6 +32,57 @@ const server = new McpServer({
     // prompts: { listChanged: true },  // Would be for prompt templates
   },
 });
+
+// CORS Configuration for Browser-Based MCP Clients
+// Manual implementation to ensure Mcp-Session-Id header is properly exposed
+
+// Helper function to handle CORS for HTTP requests
+function setCorsHeaders(req: IncomingMessage, res: ServerResponse): boolean {
+  const origin = req.headers.origin;
+  const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') || [
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://localhost:3200',
+    'http://127.0.0.1:3200'
+  ];
+
+  // Set CORS headers
+  if (origin) {
+    // In production, strictly check origins
+    if (process.env.NODE_ENV === 'production') {
+      if (allowedOrigins.includes(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+      } else {
+        res.statusCode = 403;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          error: {
+            code: -32000,
+            message: 'CORS policy violation: Origin not allowed',
+          },
+          id: null,
+        }));
+        return false;
+      }
+    } else {
+      // In development, allow all origins
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    }
+  } else {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+
+  // Set required CORS headers for MCP
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, mcp-session-id, Mcp-Session-Id, MCP-Protocol-Version, mcp-protocol-version, Authorization');
+  res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Max-Age', '86400'); // Cache preflight for 24 hours
+
+  return true;
+}
 
 // MCP Lifecycle logging
 function logLifecycleEvent(phase: 'initialization' | 'operation' | 'shutdown', details: Record<string, any> = {}) {
@@ -74,38 +126,6 @@ function cleanRestrictionText(text: string): string {
     .filter(Boolean);
   if (lines[0] && /^listing of pharmaceutical benefits/i.test(lines[0])) {
     lines.shift();
-  }
-  return lines.join("\n");
-}
-
-function formatPrescribingSections(rows: Array<{ pt_position?: number; prescribing_type?: string; prescribing_txt?: string; prscrbg_txt_html?: string }>): string {
-  const labelMap: Record<string, string> = {
-    CRITERIA: "CRITERIA",
-    ADMINISTRATIVE_ADVICE: "NOTE",
-    CAUTION: "CAUTION",
-    INDICATION: "INDICATION",
-    PRESCRIBING_INSTRUCTIONS: "INSTRUCTIONS",
-    PARAMETER: "PARAMETER",
-    TREATMENT_PHASE: "TREATMENT PHASE",
-    LEGACY_SCHEDULE_TEXT: "TEXT",
-    LEGACY_LI_TEXT: "TEXT",
-  };
-  const groups = new Map<string, Array<{ pos: number; text: string }>>();
-  const ordered = [...rows].sort((a, b) => (a.pt_position ?? 0) - (b.pt_position ?? 0));
-  for (const r of ordered) {
-    const label = labelMap[r.prescribing_type || ""] || (r.prescribing_type || "TEXT");
-    const text = r.prescribing_txt || r.prscrbg_txt_html || "";
-    const clean = stripHtml(text);
-    if (!clean) continue;
-    if (!groups.has(label)) groups.set(label, []);
-    groups.get(label)!.push({ pos: r.pt_position ?? 0, text: clean });
-  }
-  const lines: string[] = [];
-  for (const [label, items] of groups.entries()) {
-    lines.push(`- ${label}:`);
-    items.forEach((it, idx) => {
-      lines.push(`  ${idx + 1}. ${it.text}`);
-    });
   }
   return lines.join("\n");
 }
@@ -1582,8 +1602,21 @@ async function main() {
     try {
       const reqUrl = new URL(req.url ?? "/", `http://${req.headers.host}`);
 
+      // Handle CORS for all requests
+      const corsAllowed = setCorsHeaders(req, res);
+      if (!corsAllowed) {
+        return; // CORS handling already sent the response
+      }
+
       // Handle all MCP requests on /mcp endpoint
       if (reqUrl.pathname === '/mcp') {
+        // Handle preflight OPTIONS requests first (before any validation)
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 200;
+          res.end();
+          return;
+        }
+
         // Security: Validate Origin header to prevent DNS rebinding attacks
         if (enableDnsRebindingProtection) {
           const origin = req.headers.origin;
