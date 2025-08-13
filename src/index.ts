@@ -1,7 +1,8 @@
 import "dotenv/config";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   getDrugByNDC,
@@ -370,21 +371,24 @@ function summarizeItems(items: any[], max: number): string {
 }
 
 // MCP Tools
-server.tool(
+server.registerTool(
   "search-drugs",
-  "Search for drug information using FDA database",
   {
-    query: z
-      .string()
-      .describe("Drug name to search for (brand name or generic name)"),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(50)
-      .optional()
-      .default(10)
-      .describe("Number of results to return (max 50)"),
+    title: "Search Drugs",
+    description: "Search for drug information using FDA database",
+    inputSchema: {
+      query: z
+        .string()
+        .describe("Drug name to search for (brand name or generic name)"),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(50)
+        .optional()
+        .default(10)
+        .describe("Number of results to return (max 50)"),
+    }
   },
   async ({ query, limit }) => {
     try {
@@ -440,10 +444,13 @@ server.tool(
 );
 
 // PBS: get the latest schedule_code (simple helper for clients)
-server.tool(
+server.registerTool(
   "pbs-get-latest-schedule",
-  "Resolve the current latest PBS schedule_code for reuse by other calls.",
-  {},
+  {
+    title: "Get Latest PBS Schedule",
+    description: "Resolve the current latest PBS schedule_code for reuse by other calls.",
+    inputSchema: {}
+  },
   async () => {
     try {
       const code = await resolveLatestScheduleCode();
@@ -461,16 +468,19 @@ server.tool(
   },
 );
 // Convenience: list latest PBS schedules
-server.tool(
+server.registerTool(
   "pbs-list-schedules",
-  "List PBS schedules (optionally only the latest schedule)",
   {
-    limit: z.number().int().optional().default(5),
-    latest_only: z
-      .boolean()
-      .optional()
-      .default(true)
-      .describe("If true, only returns the latest schedule_code"),
+    title: "List PBS Schedules",
+    description: "List PBS schedules (optionally only the latest schedule)",
+    inputSchema: {
+      limit: z.number().int().optional().default(5),
+      latest_only: z
+        .boolean()
+        .optional()
+        .default(true)
+        .describe("If true, only returns the latest schedule_code"),
+    }
   },
   async ({ limit, latest_only }) => {
     const params: Record<string, string> = pickAllowedParams("schedules", { limit: String(limit) });
@@ -490,19 +500,22 @@ server.tool(
 );
 
 // PBS: list or filter dispensing rules
-server.tool(
+server.registerTool(
   "pbs-list-dispensing-rules",
-  "List PBS dispensing rules optionally filtered by mnemonic/title/reference.",
   {
-    schedule_code: z.string().optional().describe("Filter by schedule_code (numeric)."),
-    dispensing_rule_mnem: z.string().optional().describe("Filter by dispensing rule mnemonic, e.g. 's90-cp'."),
-    dispensing_rule_reference: z.string().optional().describe("Filter by dispensing rule reference id."),
-    dispensing_rule_title: z.string().optional().describe("Filter by human-readable dispensing rule title."),
-    community_pharmacy_indicator: z
-      .string()
-      .optional()
-      .describe("Filter by community pharmacy applicability (TRUE for community pharmacy)."),
-    limit: z.number().int().optional().default(10).describe("Max rules to return."),
+    title: "List PBS Dispensing Rules",
+    description: "List PBS dispensing rules optionally filtered by mnemonic/title/reference.",
+    inputSchema: {
+      schedule_code: z.string().optional().describe("Filter by schedule_code (numeric)."),
+      dispensing_rule_mnem: z.string().optional().describe("Filter by dispensing rule mnemonic, e.g. 's90-cp'."),
+      dispensing_rule_reference: z.string().optional().describe("Filter by dispensing rule reference id."),
+      dispensing_rule_title: z.string().optional().describe("Filter by human-readable dispensing rule title."),
+      community_pharmacy_indicator: z
+        .string()
+        .optional()
+        .describe("Filter by community pharmacy applicability (TRUE for community pharmacy)."),
+      limit: z.number().int().optional().default(10).describe("Max rules to return."),
+    }
   },
   async ({ schedule_code, dispensing_rule_mnem, dispensing_rule_reference, dispensing_rule_title, community_pharmacy_indicator, limit }) => {
     if (!isValidScheduleCode(schedule_code)) return { content: [{ type: "text", text: `Invalid schedule_code: ${schedule_code}` }] };
@@ -528,13 +541,16 @@ server.tool(
 );
 
 // PBS: get restrictions (legal text incl. notes/cautions) for an item
-server.tool(
+server.registerTool(
   "pbs-get-restrictions-for-item",
-  "Fetch restriction text (legal instrument + notes/cautions) for a PBS item code; auto-uses the item's schedule if not provided.",
   {
-    pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
-    schedule_code: z.string().optional().describe("Optional schedule code; if omitted, uses the item's schedule."),
-    limit: z.number().int().optional().default(1).describe("How many restriction groups to show."),
+    title: "Get PBS Item Restrictions",
+    description: "Fetch restriction text (legal instrument + notes/cautions) for a PBS item code; auto-uses the item's schedule if not provided.",
+    inputSchema: {
+      pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
+      schedule_code: z.string().optional().describe("Optional schedule code; if omitted, uses the item's schedule."),
+      limit: z.number().int().optional().default(1).describe("How many restriction groups to show."),
+    }
   },
   async ({ pbs_item_code, schedule_code, limit }) => {
     const code = normalizePbsItemCode(pbs_item_code);
@@ -588,12 +604,15 @@ server.tool(
 );
 
 // PBS: prescribers for item
-server.tool(
+server.registerTool(
   "pbs-get-prescribers-for-item",
-  "List prescriber types allowed for a PBS item across schedules (e.g., Medical Practitioners).",
   {
-    pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
-    schedule_code: z.string().optional().describe("Optional schedule code filter."),
+    title: "Get PBS Item Prescribers",
+    description: "List prescriber types allowed for a PBS item across schedules (e.g., Medical Practitioners).",
+    inputSchema: {
+      pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
+      schedule_code: z.string().optional().describe("Optional schedule code filter."),
+    }
   },
   async ({ pbs_item_code, schedule_code }) => {
     const code = normalizePbsItemCode(pbs_item_code);
@@ -615,12 +634,15 @@ server.tool(
 );
 
 // PBS: ATC classification for item
-server.tool(
+server.registerTool(
   "pbs-get-atc-for-item",
-  "Return ATC classification(s) for a PBS item, enriched with ATC descriptions (de-duplicated).",
   {
-    pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
-    schedule_code: z.string().optional().describe("Optional schedule code filter."),
+    title: "Get PBS Item ATC Classification",
+    description: "Return ATC classification(s) for a PBS item, enriched with ATC descriptions (de-duplicated).",
+    inputSchema: {
+      pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
+      schedule_code: z.string().optional().describe("Optional schedule code filter."),
+    }
   },
   async ({ pbs_item_code, schedule_code }) => {
     const code = normalizePbsItemCode(pbs_item_code);
@@ -651,12 +673,15 @@ server.tool(
 );
 
 // PBS: AMT mapping for item
-server.tool(
+server.registerTool(
   "pbs-get-amt-mapping",
-  "Return AMT concept mapping (MP/MPUU/MPP/TPP) for a PBS item (de-duplicated).",
   {
-    pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
-    schedule_code: z.string().optional().describe("Optional schedule code filter."),
+    title: "Get PBS Item AMT Mapping",
+    description: "Return AMT concept mapping (MP/MPUU/MPP/TPP) for a PBS item (de-duplicated).",
+    inputSchema: {
+      pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
+      schedule_code: z.string().optional().describe("Optional schedule code filter."),
+    }
   },
   async ({ pbs_item_code, schedule_code }) => {
     const code = normalizePbsItemCode(pbs_item_code);
@@ -679,12 +704,15 @@ server.tool(
 );
 
 // PBS: organisation for item
-server.tool(
+server.registerTool(
   "pbs-get-organisation-for-item",
-  "Return manufacturer/responsible person info for a PBS item (from /organisations).",
   {
-    pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
-    schedule_code: z.string().optional().describe("Optional schedule code filter."),
+    title: "Get PBS Item Organisation",
+    description: "Return manufacturer/responsible person info for a PBS item (from /organisations).",
+    inputSchema: {
+      pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
+      schedule_code: z.string().optional().describe("Optional schedule code filter."),
+    }
   },
   async ({ pbs_item_code, schedule_code }) => {
     const code = normalizePbsItemCode(pbs_item_code);
@@ -708,11 +736,14 @@ server.tool(
 );
 
 // PBS: copayments (latest or given schedule)
-server.tool(
+server.registerTool(
   "pbs-get-copayments",
-  "Return PBS copayment amounts and Safety Net thresholds (latest by default).",
   {
-    schedule_code: z.string().optional().describe("Optional schedule code; if omitted, resolves latest."),
+    title: "Get PBS Copayments",
+    description: "Return PBS copayment amounts and Safety Net thresholds (latest by default).",
+    inputSchema: {
+      schedule_code: z.string().optional().describe("Optional schedule code; if omitted, resolves latest."),
+    }
   },
   async ({ schedule_code }) => {
     if (!isValidScheduleCode(schedule_code)) {
@@ -743,12 +774,15 @@ server.tool(
 );
 
 // PBS: price events for item
-server.tool(
+server.registerTool(
   "pbs-get-price-events-for-item",
-  "Return statutory price reduction events for a PBS item (de-duplicated).",
   {
-    pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
-    schedule_code: z.string().optional().describe("Optional schedule code filter."),
+    title: "Get PBS Item Price Events",
+    description: "Return statutory price reduction events for a PBS item (de-duplicated).",
+    inputSchema: {
+      pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
+      schedule_code: z.string().optional().describe("Optional schedule code filter."),
+    }
   },
   async ({ pbs_item_code, schedule_code }) => {
     const code = normalizePbsItemCode(pbs_item_code);
@@ -774,12 +808,15 @@ server.tool(
 );
 
 // PBS: program details for item
-server.tool(
+server.registerTool(
   "pbs-get-program-details",
-  "Return program info and dispensing rules for a PBS item (de-duplicated rules).",
   {
-    pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
-    schedule_code: z.string().optional().describe("Optional schedule code filter."),
+    title: "Get PBS Item Program Details",
+    description: "Return program info and dispensing rules for a PBS item (de-duplicated rules).",
+    inputSchema: {
+      pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'."),
+      schedule_code: z.string().optional().describe("Optional schedule code filter."),
+    }
   },
   async ({ pbs_item_code, schedule_code }) => {
     const code = normalizePbsItemCode(pbs_item_code);
@@ -806,16 +843,19 @@ server.tool(
   },
 );
 // Convenience: get PBS items by code, with optional schedule
-server.tool(
+server.registerTool(
   "pbs-get-item",
-  "Fetch PBS item(s) by pbs_item_code and optional schedule_code; returns compact summary lines.",
   {
-    pbs_item_code: z.string().describe("PBS item code, e.g. '1234K'."),
-    schedule_code: z
-      .string()
-      .optional()
-      .describe("Optional schedule code filter."),
-    limit: z.number().int().optional().default(5).describe("Max items to summarize."),
+    title: "Get PBS Item",
+    description: "Fetch PBS item(s) by pbs_item_code and optional schedule_code; returns compact summary lines.",
+    inputSchema: {
+      pbs_item_code: z.string().describe("PBS item code, e.g. '1234K'."),
+      schedule_code: z
+        .string()
+        .optional()
+        .describe("Optional schedule code filter."),
+      limit: z.number().int().optional().default(5).describe("Max items to summarize."),
+    }
   },
   async ({ pbs_item_code, schedule_code, limit }) => {
     const code = normalizePbsItemCode(pbs_item_code);
@@ -843,14 +883,17 @@ server.tool(
 );
 
 // Convenience: search item overview by ODATA filter
-server.tool(
+server.registerTool(
   "pbs-search-item-overview",
-  "Search PBS item-overview using simple ODATA-like filters (brand_name/li_drug_name/pbs_code, etc.).",
   {
-    filter: z
-      .string()
-      .describe("Equality filters only (e.g., brand_name eq 'PANADOL', li_drug_name eq 'PARACETAMOL', or raw brand_name)."),
-    limit: z.number().int().optional().default(5).describe("Max results to show."),
+    title: "Search PBS Item Overview",
+    description: "Search PBS item-overview using simple ODATA-like filters (brand_name/li_drug_name/pbs_code, etc.).",
+    inputSchema: {
+      filter: z
+        .string()
+        .describe("Equality filters only (e.g., brand_name eq 'PANADOL', li_drug_name eq 'PARACETAMOL', or raw brand_name)."),
+      limit: z.number().int().optional().default(5).describe("Max results to show."),
+    }
   },
   async ({ filter, limit }) => {
     // Translate simple ODATA eq/contains into query params the PBS API accepts
@@ -882,15 +925,18 @@ server.tool(
     }
   },
 );
-server.tool(
+server.registerTool(
   "pbs-search",
-  "Query Australia's PBS public API (rate-limited; ~20s between calls).",
   {
-    endpoint: z
-      .enum(["schedules", "items", "item-overview", "organisations", "fees", "dispensing-rules"]) // include dispensing-rules
-      .or(z.string())
-      .describe("PBS endpoint under base, e.g. 'schedules', 'items', 'item-overview'"),
-    params: z.record(z.string()).optional().describe("Query parameters passed through (validated per endpoint)."),
+    title: "Search PBS API",
+    description: "Query Australia's PBS public API (rate-limited; ~20s between calls).",
+    inputSchema: {
+      endpoint: z
+        .enum(["schedules", "items", "item-overview", "organisations", "fees", "dispensing-rules"]) // include dispensing-rules
+        .or(z.string())
+        .describe("PBS endpoint under base, e.g. 'schedules', 'items', 'item-overview'"),
+      params: z.record(z.string()).optional().describe("Query parameters passed through (validated per endpoint)."),
+    }
   },
   async ({ endpoint, params }) => {
     try {
@@ -932,14 +978,17 @@ server.tool(
 );
 
 // PBS: summary of changes across schedules
-server.tool(
+server.registerTool(
   "pbs-summary-of-changes",
-  "Summarize changes between schedules for a given endpoint/table (INSERT/UPDATE/DELETE).",
   {
-    schedule_code: z.string().optional().describe("Target schedule code; if omitted uses latest."),
-    source_schedule_code: z.string().optional().describe("Source schedule (previous); inferred if omitted."),
-    changed_endpoint: z.string().optional().describe("Endpoint/table to filter by, e.g. 'items'."),
-    limit: z.number().int().optional().default(10).describe("Max change rows to include."),
+    title: "PBS Summary of Changes",
+    description: "Summarize changes between schedules for a given endpoint/table (INSERT/UPDATE/DELETE).",
+    inputSchema: {
+      schedule_code: z.string().optional().describe("Target schedule code; if omitted uses latest."),
+      source_schedule_code: z.string().optional().describe("Source schedule (previous); inferred if omitted."),
+      changed_endpoint: z.string().optional().describe("Endpoint/table to filter by, e.g. 'items'."),
+      limit: z.number().int().optional().default(10).describe("Max change rows to include."),
+    }
   },
   async ({ schedule_code, source_schedule_code, changed_endpoint, limit }) => {
     if (!isValidScheduleCode(schedule_code) || !isValidScheduleCode(source_schedule_code)) {
@@ -980,11 +1029,14 @@ server.tool(
     return { content: [{ type: "text", text }] };
   },
 );
-server.tool(
+server.registerTool(
   "list-who-indicators",
-  "List WHO indicators by searching for a keyword (useful to find exact indicator names/codes)",
   {
-    query: z.string().describe("Keyword to search in WHO Indicator names"),
+    title: "List WHO Indicators",
+    description: "List WHO indicators by searching for a keyword (useful to find exact indicator names/codes)",
+    inputSchema: {
+      query: z.string().describe("Keyword to search in WHO Indicator names"),
+    }
   },
   async ({ query }) => {
     const items = await listWhoIndicators(query);
@@ -1002,12 +1054,15 @@ server.tool(
 );
 
 // Convenience: get fees for a PBS item code (resolves program_code then looks up fees)
-server.tool(
+server.registerTool(
   "pbs-get-fees-for-item",
-  "Fetch PBS fees by resolving an item's program_code, optionally for a specific schedule",
   {
-    pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'"),
-    schedule_code: z.string().optional().describe("Optional schedule code, e.g. '3773'"),
+    title: "Get PBS Item Fees",
+    description: "Fetch PBS fees by resolving an item's program_code, optionally for a specific schedule",
+    inputSchema: {
+      pbs_item_code: z.string().describe("PBS item code, e.g. '12210P'"),
+      schedule_code: z.string().optional().describe("Optional schedule code, e.g. '3773'"),
+    }
   },
   async ({ pbs_item_code, schedule_code }) => {
     const code = normalizePbsItemCode(pbs_item_code);
@@ -1053,11 +1108,14 @@ server.tool(
   },
 );
 
-server.tool(
+server.registerTool(
   "get-drug-details",
-  "Get detailed information about a specific drug by NDC (National Drug Code)",
   {
-    ndc: z.string().describe("National Drug Code (NDC) of the drug"),
+    title: "Get Drug Details",
+    description: "Get detailed information about a specific drug by NDC (National Drug Code)",
+    inputSchema: {
+      ndc: z.string().describe("National Drug Code (NDC) of the drug"),
+    }
   },
   async ({ ndc }) => {
     try {
@@ -1128,27 +1186,30 @@ server.tool(
   },
 );
 
-server.tool(
+server.registerTool(
   "get-health-statistics",
-  "Get health statistics and indicators from WHO Global Health Observatory",
   {
-    indicator: z
-      .string()
-      .describe(
-        "Health indicator to search for (e.g., 'Life expectancy', 'Mortality rate')",
-      ),
-    country: z
-      .string()
-      .optional()
-      .describe("Country code (e.g., 'USA', 'GBR') - optional"),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(20)
-      .optional()
-      .default(10)
-      .describe("Number of results to return (max 20)"),
+    title: "Get Health Statistics",
+    description: "Get health statistics and indicators from WHO Global Health Observatory",
+    inputSchema: {
+      indicator: z
+        .string()
+        .describe(
+          "Health indicator to search for (e.g., 'Life expectancy', 'Mortality rate')",
+        ),
+      country: z
+        .string()
+        .optional()
+        .describe("Country code (e.g., 'USA', 'GBR') - optional"),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(20)
+        .optional()
+        .default(10)
+        .describe("Number of results to return (max 20)"),
+    }
   },
   async ({ indicator, country, limit }) => {
     try {
@@ -1210,19 +1271,22 @@ server.tool(
   },
 );
 
-server.tool(
+server.registerTool(
   "search-medical-literature",
-  "Search for medical research articles in PubMed",
   {
-    query: z.string().describe("Medical topic or condition to search for"),
-    max_results: z
-      .number()
-      .int()
-      .min(1)
-      .max(20)
-      .optional()
-      .default(10)
-      .describe("Maximum number of articles to return (max 20)"),
+    title: "Search Medical Literature",
+    description: "Search for medical research articles in PubMed",
+    inputSchema: {
+      query: z.string().describe("Medical topic or condition to search for"),
+      max_results: z
+        .number()
+        .int()
+        .min(1)
+        .max(20)
+        .optional()
+        .default(10)
+        .describe("Maximum number of articles to return (max 20)"),
+    }
   },
   async ({ query, max_results }) => {
     try {
@@ -1274,11 +1338,14 @@ server.tool(
   },
 );
 
-server.tool(
+server.registerTool(
   "search-drug-nomenclature",
-  "Search for drug information using RxNorm (standardized drug nomenclature)",
   {
-    query: z.string().describe("Drug name to search for in RxNorm database"),
+    title: "Search Drug Nomenclature",
+    description: "Search for drug information using RxNorm (standardized drug nomenclature)",
+    inputSchema: {
+      query: z.string().describe("Drug name to search for in RxNorm database"),
+    }
   },
   async ({ query }) => {
     try {
@@ -1330,13 +1397,16 @@ server.tool(
   },
 );
 
-server.tool(
+server.registerTool(
   "search-google-scholar",
-  "Search for academic research articles using Google Scholar",
   {
-    query: z
-      .string()
-      .describe("Academic topic or research query to search for"),
+    title: "Search Google Scholar",
+    description: "Search for academic research articles using Google Scholar",
+    inputSchema: {
+      query: z
+        .string()
+        .describe("Academic topic or research query to search for"),
+    }
   },
   async ({ query }) => {
     try {
@@ -1401,55 +1471,115 @@ server.tool(
 );
 
 async function main() {
-  const port = Number(process.env.PORT|| 3000);
+  const port = Number(process.env.PORT || 3000);
   const host = process.env.HOST || "127.0.0.1";
 
-  const transports = new Map<string, SSEServerTransport>();
+  // Map to store transports by session ID
+  const transports: { [sessionId: string]: StreamableHTTPServerTransport } = {};
 
-  const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+  const httpServer = createServer();
+  httpServer.on('request', async (req: IncomingMessage, res: ServerResponse) => {
     try {
       const reqUrl = new URL(req.url ?? "/", `http://${req.headers.host}`);
 
-      // Establish SSE stream
-      if (req.method === "GET" && reqUrl.pathname === "/sse") {
-        const transport = new SSEServerTransport("/messages", res);
-        const sessionId = transport.sessionId;
-        transports.set(sessionId, transport);
-        transport.onclose = () => transports.delete(sessionId);
-        await server.connect(transport);
+      // Handle all MCP requests on /mcp endpoint
+      if (reqUrl.pathname === '/mcp') {
+        // Parse request body for POST requests
+        let body: any = undefined;
+        if (req.method === 'POST') {
+          const chunks: Buffer[] = [];
+          for await (const chunk of req) {
+            chunks.push(chunk);
+          }
+          const rawBody = Buffer.concat(chunks).toString();
+          try {
+            body = JSON.parse(rawBody);
+          } catch (e) {
+            res.statusCode = 400;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({
+              jsonrpc: '2.0',
+              error: {
+                code: -32700,
+                message: 'Parse error: Invalid JSON',
+              },
+              id: null,
+            }));
+            return;
+          }
+        }
+
+        // Check for existing session ID
+        const sessionId = req.headers['mcp-session-id'] as string | undefined;
+        let transport: StreamableHTTPServerTransport;
+
+        if (sessionId && transports[sessionId]) {
+          // Reuse existing transport
+          transport = transports[sessionId];
+        } else if (!sessionId && req.method === 'POST') {
+          // New initialization request
+          transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+            onsessioninitialized: (sessionId) => {
+              // Store the transport by session ID
+              transports[sessionId] = transport;
+            },
+            // Disable DNS rebinding protection for local development
+            enableDnsRebindingProtection: false,
+          });
+
+          // Clean up transport when closed
+          transport.onclose = () => {
+            if (transport.sessionId) {
+              delete transports[transport.sessionId];
+            }
+          };
+
+          // Connect to the MCP server
+          await server.connect(transport);
+        } else {
+          // Invalid request
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            error: {
+              code: -32000,
+              message: 'Bad Request: No valid session ID provided',
+            },
+            id: null,
+          }));
+          return;
+        }
+
+        // Handle the request
+        await transport.handleRequest(req, res, body);
         return;
       }
 
-      // Receive client JSON-RPC messages
-      if (req.method === "POST" && reqUrl.pathname === "/messages") {
-        const sessionId = reqUrl.searchParams.get("sessionId");
-        if (!sessionId) {
-          res.statusCode = 400;
-          res.end("Missing sessionId parameter");
-          return;
-        }
-        const transport = transports.get(sessionId);
-        if (!transport) {
-          res.statusCode = 404;
-          res.end("Session not found");
-          return;
-        }
-        await transport.handlePostMessage(req as any, res);
+      // Health check endpoint
+      if (req.method === "GET" && reqUrl.pathname === "/health") {
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ status: 'ok', timestamp: new Date().toISOString() }));
         return;
       }
 
       res.statusCode = 404;
-      res.end("Not found");
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Not found' }));
     } catch (error) {
+      console.error('Server error:', error);
       res.statusCode = 500;
-      res.end("Internal server error");
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Internal server error' }));
     }
   });
 
   httpServer.listen(port, host, () => {
-    console.error(`Medical MCP SSE server listening at http://${host}:${port}`);
-    console.error(`SSE endpoint: GET http://${host}:${port}/sse`);
-    console.error(`POST messages endpoint: POST http://${host}:${port}/messages?sessionId=...`);
+    console.error(`Medical MCP Streamable HTTP server listening at http://${host}:${port}`);
+    console.error(`MCP endpoint: http://${host}:${port}/mcp`);
+    console.error(`Health check: http://${host}:${port}/health`);
   });
 }
 
