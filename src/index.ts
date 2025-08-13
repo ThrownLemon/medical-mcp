@@ -1726,7 +1726,15 @@ async function main() {
         logLifecycleEvent('initialization', {
           event: 'protocol_version_negotiated',
           negotiatedVersion,
-          headerProvided: !!protocolVersion
+          headerProvided: !!protocolVersion,
+          // Debug info for troubleshooting clients
+          requestHeaders: {
+            'user-agent': req.headers['user-agent'],
+            'content-type': req.headers['content-type'],
+            'accept': req.headers['accept'],
+            'mcp-protocol-version': req.headers['mcp-protocol-version'],
+            'mcp-session-id': req.headers['mcp-session-id']
+          }
         });
 
         // Check for existing session ID
@@ -1743,7 +1751,9 @@ async function main() {
           // New initialization request
           logLifecycleEvent('initialization', {
             event: 'new_session_starting',
-            protocolVersion: negotiatedVersion
+            protocolVersion: negotiatedVersion,
+            // Debug: log the initialize request body
+            requestBody: body
           });
           
           // Build a new MCP server instance for this session
@@ -1784,7 +1794,17 @@ async function main() {
           await transport.handleRequest(req, res, body);
           return;
         } else {
-          // Invalid request
+          // Invalid request - log details for debugging
+          logLifecycleEvent('initialization', {
+            event: 'request_rejected',
+            reason: 'no_valid_session_or_initialize',
+            hasSessionId: !!sessionId,
+            method: req.method,
+            isInitializeRequest: req.method === 'POST' ? isInitializeRequest(body) : false,
+            requestBody: body,
+            protocolVersion: negotiatedVersion
+          });
+          
           res.statusCode = 400;
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({
