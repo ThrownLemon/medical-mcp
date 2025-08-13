@@ -1,15 +1,40 @@
 # Medical MCP Server
 
-A Model Context Protocol (MCP) server (SSE transport) that provides comprehensive medical information by querying multiple authoritative sources: FDA, WHO, PubMed, RxNorm, Google Scholar (with optional SerpAPI), and Australia's PBS Public API.
+A Model Context Protocol (MCP) server (Streamable HTTP transport) that provides comprehensive medical information by querying multiple authoritative sources: FDA, WHO, PubMed, RxNorm, Google Scholar (with optional SerpAPI), and Australia's PBS Public API.
 
 ## Features
 
-This MCP server offers a set of tools organized by capability:
- - Drug info (FDA)
- - Drug nomenclature (RxNorm)
- - Health statistics (WHO) + discovery helper
- - Medical literature (PubMed, Google Scholar with optional SerpAPI)
- - Australia PBS lookups (schedules, items, item-overview, fees)
+This MCP server offers **22 medical tools** organized by capability:
+
+**🔍 Drug Information (FDA)**
+- `search-drugs` - Search FDA drug database
+- `get-drug-details` - Get detailed drug info by NDC
+
+**📊 Health Statistics (WHO)**
+- `get-health-statistics` - WHO Global Health Observatory data
+- `list-who-indicators` - Discover available health indicators  
+
+**📚 Medical Literature**
+- `search-medical-literature` - PubMed research articles
+- `search-google-scholar` - Academic papers via Google Scholar
+
+**💊 Drug Nomenclature (RxNorm)**
+- `search-drug-nomenclature` - Standardized drug names and codes
+
+**🇦🇺 Australian PBS (Pharmaceutical Benefits Scheme)**
+- `pbs-get-latest-schedule` - Get current PBS schedule code
+- `pbs-list-schedules` - List PBS schedules 
+- `pbs-get-item` - Get PBS item by code
+- `pbs-search-item-overview` - Search PBS items with filters
+- `pbs-search` - General PBS API search
+- `pbs-get-fees-for-item` - Get PBS fees for specific items
+- `pbs-list-dispensing-rules` - List PBS dispensing rules
+- `pbs-get-organisation-for-item` - Get manufacturer info
+- `pbs-get-copayments` - Get PBS copayment information
+- `pbs-get-restrictions-for-item` - Get PBS restriction details
+- `pbs-get-schedule-effective-date` - Get schedule effective dates
+- `pbs-list-programs` - List PBS programs
+- `pbs-get-item-restrictions` - Get detailed item restrictions
 
 ### 💊 Drug Information Tools
 
@@ -251,11 +276,54 @@ npm install
 npm run build
 ```
 
+## MCP Client Configuration
+
+### Option 1: Streamable HTTP (Recommended)
+
+Add to your MCP client configuration (e.g., `~/.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "medical-mcp": {
+      "url": "http://127.0.0.1:3200/mcp"
+    }
+  }
+}
+```
+
+Start the server manually:
+```bash
+PORT=3200 node build/index.js
+```
+
+### Option 2: stdio Transport
+
+Add to your MCP client configuration:
+
+```json
+{
+  "mcpServers": {
+    "medical-mcp": {
+      "command": "node",
+      "args": ["/path/to/medical-mcp/build/index.js"],
+      "env": {
+        "PBS_API_BASE": "https://data-api.health.gov.au/pbs/api/v3",
+        "PBS_SUBSCRIPTION_KEY": "2384af7c667342ceb5a736fe29f1dc6b",
+        "DEFAULT_COUNTRY_ISO3": "AUS"
+      }
+    }
+  }
+}
+```
+
+The server will be started automatically by the MCP client.
+
 ## Usage
 
-### Running the Server (SSE)
+### Running the Server (Streamable HTTP)
 
-Start the MCP server (SSE transport):
+Start the MCP server (Streamable HTTP transport):
 
 ```bash
 npm run build && node build/index.js
@@ -283,10 +351,10 @@ These are read from env via `src/constants.ts`:
 
 Once started:
 
-- SSE stream: `GET http://HOST:PORT/sse`
-- Message POST endpoint: `POST http://HOST:PORT/messages?sessionId=...`
+- MCP endpoint: `POST http://HOST:PORT/mcp`
+- Health check: `GET http://HOST:PORT/health`
 
-Point your MCP client to the `/sse` endpoint (the server emits an `endpoint` event with the POST URL including `sessionId`).
+Point your MCP client to the `/mcp` endpoint. The server uses Streamable HTTP transport with automatic session management.
 
 ### Example Queries
 
@@ -475,6 +543,15 @@ This MCP server integrates with the following medical APIs:
 - **Update Frequency**: Real-time as new papers are indexed
 - **Note**: Access via web scraping with rate limiting protection
 
+### PBS (Pharmaceutical Benefits Scheme) - Australia
+
+- **Source**: Australian Government Department of Health PBS Public API
+- **Coverage**: All medications subsidized under Australia's PBS
+- **Data**: Drug schedules, pricing, restrictions, dispensing rules, and manufacturer information
+- **Update Frequency**: Regular updates as PBS schedules are published
+- **API Base**: `https://data-api.health.gov.au/pbs/api/v3`
+- **Rate Limits**: Approximately 1 request per 20 seconds (globally throttled)
+
 ## Error Handling
 
 The server includes comprehensive error handling:
@@ -519,12 +596,36 @@ The Google Scholar integration uses Puppeteer for web scraping with the followin
 - Health statistics are aggregated data and may not reflect individual circumstances
 - Medical literature should be interpreted by qualified healthcare professionals
 
+## Architecture
+
+### MCP Server Implementation
+
+This server implements the **Model Context Protocol (MCP)** using the latest **Streamable HTTP transport**:
+
+- **Transport**: Streamable HTTP (modern, replacing deprecated SSE transport)
+- **Session Management**: Automatic session handling with `mcp-session-id` headers
+- **Tool Registration**: Uses `server.registerTool()` with structured schemas
+- **Error Handling**: Comprehensive error handling with graceful fallbacks
+- **Rate Limiting**: Built-in PBS API throttling and caching
+
+### API Integration
+
+The server integrates with multiple authoritative medical APIs:
+
+- **FDA API**: Real-time drug labeling and safety information
+- **WHO GHO**: Global health statistics and indicators  
+- **PubMed**: Medical research literature database
+- **RxNorm**: Standardized drug nomenclature system
+- **PBS API**: Australian pharmaceutical benefits information
+- **Google Scholar**: Academic research via web scraping + optional SerpAPI
+
 ## Dependencies
 
 - `@modelcontextprotocol/sdk` - MCP SDK for server implementation
 - `superagent` - HTTP client for API requests
 - `puppeteer` - Browser automation for web scraping Google Scholar
 - `zod` - Schema validation for tool parameters
+- `crypto` - Session ID generation for MCP sessions
 
 ## License
 
