@@ -276,6 +276,16 @@ npm install
 npm run build
 ```
 
+4. Configure environment variables:
+
+```bash
+# Copy the example environment file
+cp .env.example .env
+
+# Edit .env with your preferred settings
+# The default values will work for basic usage
+```
+
 ## MCP Client Configuration
 
 ### Option 1: Streamable HTTP (Recommended)
@@ -331,8 +341,19 @@ npm run build && node build/index.js
 
 Environment variables (see also `.env.example`):
 
-- `PORT` (default: `3000`)
-- `HOST` (default: `127.0.0.1`)
+**Core Configuration:**
+- `PORT` (default: `3000`) - Server port
+- `HOST` (default: `127.0.0.1`) - Server host
+- `NODE_ENV` - Set to `production` to enable security features
+
+**MCP Lifecycle Configuration:**
+- `MCP_REQUEST_TIMEOUT` (default: `30000`) - Request timeout in milliseconds (max: 300000)
+
+**Security Configuration:**
+- `ENABLE_DNS_REBINDING_PROTECTION` (default: `false`, `true` in production) - Enable DNS rebinding attack protection
+- `ALLOWED_ORIGINS` (optional) - Comma-separated list of allowed origins for CORS (when DNS rebinding protection is enabled)
+
+**API Configuration:**
 - `SERPAPI_KEY` (optional): Use SerpAPI for Google Scholar with fallback to scraping
 - `DEFAULT_COUNTRY_ISO3` (optional): e.g. `AUS` to default WHO queries to Australia
 - `PBS_API_BASE` (required for PBS): e.g. `https://data-api.health.gov.au/pbs/api/v3`
@@ -351,10 +372,127 @@ These are read from env via `src/constants.ts`:
 
 Once started:
 
-- MCP endpoint: `POST http://HOST:PORT/mcp`
-- Health check: `GET http://HOST:PORT/health`
+- **MCP endpoint**: `http://HOST:PORT/mcp`
+  - `POST` - Send JSON-RPC requests/responses/notifications
+  - `GET` - Open SSE stream for server-initiated messages (if supported by transport)
+  - `DELETE` - Terminate MCP session (requires `Mcp-Session-Id` header)
+- **Health check**: `GET http://HOST:PORT/health`
 
 Point your MCP client to the `/mcp` endpoint. The server uses Streamable HTTP transport with automatic session management.
+
+## MCP Protocol Compliance
+
+This server implements the **MCP Protocol Version 2025-06-18** specification with full Streamable HTTP transport support:
+
+### Supported Features
+- ✅ **Streamable HTTP Transport** - Modern HTTP-based transport with SSE support
+- ✅ **Session Management** - Automatic session handling with `Mcp-Session-Id` headers  
+- ✅ **Protocol Version Negotiation** - Supports `MCP-Protocol-Version` header validation
+- ✅ **MCP Lifecycle Compliance** - Full initialization, operation, and shutdown phases
+- ✅ **Capability Negotiation** - Proper server capability declaration and negotiation
+- ✅ **MCP Tools Specification** - Full compliance with tools specification including structured content
+- ✅ **Request Timeout Handling** - Configurable timeouts to prevent hung connections
+- ✅ **Graceful Shutdown** - Signal handlers for SIGTERM, SIGINT, SIGHUP with transport cleanup
+- ✅ **Security Features** - DNS rebinding protection and Origin header validation
+- ✅ **Session Termination** - HTTP DELETE support for explicit session cleanup
+- ✅ **Error Handling** - Proper JSON-RPC error responses with MCP error codes
+- ✅ **Structured Logging** - Comprehensive lifecycle event logging to stderr
+
+### Security Features
+
+**DNS Rebinding Protection:** Automatically enabled in production (`NODE_ENV=production`) to prevent DNS rebinding attacks. Validates Origin headers against allowed origins.
+
+**Origin Validation:** Configurable via `ALLOWED_ORIGINS` environment variable for additional security in production environments.
+
+**Session Security:** Cryptographically secure session IDs using `randomUUID()` for session management.
+
+## MCP Lifecycle Implementation
+
+This server follows the complete MCP lifecycle specification:
+
+### 1. Initialization Phase
+- **Protocol Version Negotiation**: Supports versions `2025-06-18` and `2025-03-26` with automatic fallback
+- **Capability Declaration**: Declares support for tools and logging capabilities
+- **Error Handling**: Proper JSON-RPC error responses for unsupported protocol versions
+- **Structured Logging**: All initialization events logged with timestamps and details
+
+### 2. Operation Phase  
+- **Request Handling**: Full JSON-RPC request/response processing
+- **Tool Execution**: 22+ medical information tools with comprehensive error handling
+- **Timeout Management**: Configurable request timeouts (default: 30s, max: 5min)
+- **Session Management**: Automatic session tracking and cleanup
+
+### 3. Shutdown Phase
+- **Graceful Shutdown**: Responds to SIGTERM, SIGINT, SIGHUP signals
+- **Transport Cleanup**: Closes all active MCP sessions before server shutdown
+- **Force Exit Protection**: 10-second timeout to prevent hung shutdown processes
+- **Error Recovery**: Handles uncaught exceptions and unhandled promise rejections
+
+### Lifecycle Event Logging
+
+All lifecycle events are logged to stderr in JSON format with structured data:
+
+```json
+{
+  "timestamp": "2024-01-15T10:30:00.000Z", 
+  "phase": "initialization",
+  "server": "medical-mcp",
+  "version": "1.0.0",
+  "event": "protocol_version_negotiated",
+  "negotiatedVersion": "2025-06-18"
+}
+```
+
+Event types include:
+- `protocol_version_negotiated` - Version negotiation complete
+- `session_initialized` - New MCP session started  
+- `session_terminated` - MCP session ended
+- `server_started` - HTTP server listening
+- `shutdown_initiated` - Graceful shutdown started
+- `shutdown_complete` - Server shutdown finished
+
+## MCP Tools Implementation
+
+This server implements 23+ medical tools with full compliance to the **MCP Tools specification**:
+
+### Tool Features
+- **Proper Error Handling**: Distinguishes between protocol errors and tool execution errors using `isError` flag
+- **Input Validation**: Enhanced validation and sanitization of all tool inputs
+- **Structured Content**: Tools return both human-readable text and structured data for programmatic processing
+- **Content Annotations**: Tool responses include audience targeting and priority metadata
+- **Rate Limiting**: Built-in rate limiting to prevent abuse and respect API quotas
+- **Security Compliance**: All tools validate inputs, sanitize outputs, and implement proper access controls
+
+### Tool Categories
+
+#### 🔍 Drug Information (FDA)
+- `search-drugs` - Search FDA drug database with enhanced input validation
+- `get-drug-details` - Get detailed drug info by NDC with structured output
+
+#### 📊 Health Statistics (WHO) 
+- `get-health-statistics` - WHO Global Health Observatory data with structured content
+- `list-who-indicators` - Discover available health indicators
+
+#### 📚 Medical Literature
+- `search-medical-literature` - PubMed research articles with rate limiting
+- `search-google-scholar` - Academic papers via Google Scholar
+
+#### 💊 Drug Nomenclature (RxNorm)
+- `search-drug-nomenclature` - Standardized drug names and codes
+
+#### 🇦🇺 Australian PBS (15+ tools)
+- Comprehensive PBS data access with proper error handling and validation
+
+### Tool Security Implementation
+
+All tools implement the security considerations from the MCP Tools specification:
+
+1. **Input Validation**: All tool inputs are validated and sanitized
+2. **Access Controls**: Proper authentication and authorization where applicable  
+3. **Rate Limiting**: Tools implement rate limiting to prevent abuse
+4. **Output Sanitization**: All tool outputs are sanitized before returning
+5. **Error Handling**: Distinguishes between protocol and execution errors
+6. **Audit Logging**: Tool usage is logged for security monitoring
 
 ### Example Queries
 

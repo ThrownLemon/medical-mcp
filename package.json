@@ -7,7 +7,14 @@
   },
   "scripts": {
     "build": "tsc && chmod 755 build/index.js",
-    "start": "node build/index.js"
+    "start": "node build/index.js",
+    "dev": "npm run build && npm run start:dev",
+    "prod": "npm run build && npm run start:prod",
+    "start:dev": "NODE_ENV=development DOTENV_CONFIG_PATH=.env.development node build/index.js",
+    "start:prod": "NODE_ENV=production DOTENV_CONFIG_PATH=.env.production node build/index.js",
+    "env:check": "node -e \"import 'dotenv/config'; console.log('Environment loaded:', {NODE_ENV: process.env.NODE_ENV, PORT: process.env.PORT, PBS_API_BASE: process.env.PBS_API_BASE})\"",
+    "env:check:dev": "NODE_ENV=development DOTENV_CONFIG_PATH=.env.development npm run env:check --silent",
+    "env:check:prod": "NODE_ENV=production DOTENV_CONFIG_PATH=.env.production npm run env:check --silent"
   },
   "files": [
     "build"

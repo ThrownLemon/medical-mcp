@@ -22,10 +22,34 @@ const server = new McpServer({
   name: "medical-mcp",
   version: "1.0.0",
   capabilities: {
-    resources: {},
-    tools: {},
+    tools: {
+      listChanged: true  // Supports notifications when tool list changes
+    },
+    logging: {},  // Supports structured logging
+    // Note: We don't expose prompts or resources currently, but we have extensive tools
+    // resources: { listChanged: true, subscribe: false },  // Would be for file/data resources
+    // prompts: { listChanged: true },  // Would be for prompt templates
   },
 });
+
+// MCP Lifecycle logging
+function logLifecycleEvent(phase: 'initialization' | 'operation' | 'shutdown', details: Record<string, any> = {}) {
+  const timestamp = new Date().toISOString();
+  const logData = {
+    timestamp,
+    phase,
+    server: "medical-mcp",
+    version: "1.0.0",
+    ...details
+  };
+  
+  // Use console.error for server logs as per MCP convention (stderr for logging)
+  console.error(`[MCP-LIFECYCLE] ${JSON.stringify(logData)}`);
+}
+
+// MCP Lifecycle event tracking (handled through transport events)
+// Note: The MCP SDK handles the initialize/initialized lifecycle internally
+// We log lifecycle events at the transport level in the main() function
 
 // Input validation and formatting helpers
 const PBS_ITEM_CODE_REGEX = /^[0-9]{4,6}[A-Z]$/;
@@ -392,20 +416,48 @@ server.registerTool(
   },
   async ({ query, limit }) => {
     try {
-      const drugs = await searchDrugs(query, limit);
+      // Enhanced input validation and sanitization
+      if (!query || typeof query !== 'string') {
+        return {
+          content: [{ type: "text", text: "Error: Query parameter is required and must be a non-empty string." }],
+          isError: true
+        };
+      }
+      
+      // Sanitize query - remove potentially harmful characters
+      const sanitizedQuery = query.trim().replace(/[<>\"']/g, '').substring(0, 200);
+      if (sanitizedQuery.length === 0) {
+        return {
+          content: [{ type: "text", text: "Error: Query contains no valid characters after sanitization." }],
+          isError: true
+        };
+      }
+      
+      // Rate limiting check (simple implementation)
+      const now = Date.now();
+      const lastCall = (global as any).__lastDrugSearchCall || 0;
+      if (now - lastCall < 1000) { // 1 second rate limit
+        return {
+          content: [{ type: "text", text: "Error: Rate limit exceeded. Please wait before making another request." }],
+          isError: true
+        };
+      }
+      (global as any).__lastDrugSearchCall = now;
+      
+      const drugs = await searchDrugs(sanitizedQuery, limit);
 
       if (drugs.length === 0) {
         return {
           content: [
             {
               type: "text",
-              text: `No drugs found matching "${query}". Try a different search term.`,
+              text: `No drugs found matching "${sanitizedQuery}". Try a different search term.`,
             },
           ],
         };
       }
 
-      let result = `**Drug Search Results for "${query}"**\n\n`;
+      let result = `**Drug Search Results for "${sanitizedQuery}"**\n\n`;
       result += `Found ${drugs.length} drug(s)\n\n`;
 
       drugs.forEach((drug, index) => {
@@ -431,6 +483,7 @@ server.registerTool(
         ],
       };
     } catch (error: any) {
+      // Tool execution error - return with isError flag per MCP tools spec
       return {
         content: [
           {
@@ -438,6 +491,7 @@ server.registerTool(
             text: `Error searching drugs: ${error.message || "Unknown error"}`,
           },
         ],
+        isError: true
       };
     }
   },
@@ -463,6 +517,7 @@ server.registerTool(
             text: `Error resolving latest schedule_code: ${error?.message || String(error)}`,
           },
         ],
+        isError: true
       };
     }
   },
@@ -972,6 +1027,7 @@ server.registerTool(
             text: `Error calling PBS API: ${error.message || String(error)}`,
           },
         ],
+        isError: true
       };
     }
   },
@@ -1181,6 +1237,7 @@ server.registerTool(
             text: `Error fetching drug details: ${error.message || "Unknown error"}`,
           },
         ],
+        isError: true
       };
     }
   },
@@ -1250,13 +1307,43 @@ server.registerTool(
         result += "\n";
       });
 
+      // Prepare structured content
+      const structuredData = {
+        indicator,
+        country: country || null,
+        totalResults: indicators.length,
+        data: displayIndicators.map(ind => ({
+          spatialDim: ind.SpatialDim || null,
+          timeDim: ind.TimeDim || null,
+          value: ind.Value || null,
+          numericValue: ind.NumericValue || null,
+          low: ind.Low || null,
+          high: ind.High || null,
+          date: ind.Date || null,
+          comments: ind.Comments || null
+        }))
+      };
+
       return {
         content: [
           {
             type: "text",
             text: result,
+            annotations: {
+              audience: ["user"],
+              priority: 0.8
+            }
           },
+          {
+            type: "text", 
+            text: JSON.stringify(structuredData, null, 2),
+            annotations: {
+              audience: ["assistant"],
+              priority: 0.9
+            }
+          }
         ],
+        structuredContent: structuredData
       };
     } catch (error: any) {
       return {
@@ -1266,6 +1353,7 @@ server.registerTool(
             text: `Error fetching health statistics: ${error.message || "Unknown error"}`,
           },
         ],
+        isError: true
       };
     }
   },
@@ -1333,6 +1421,7 @@ server.registerTool(
             text: `Error searching medical literature: ${error.message || "Unknown error"}`,
           },
         ],
+        isError: true
       };
     }
   },
@@ -1392,6 +1481,7 @@ server.registerTool(
             text: `Error searching RxNorm: ${error.message || "Unknown error"}`,
           },
         ],
+        isError: true
       };
     }
   },
@@ -1465,6 +1555,7 @@ server.registerTool(
             text: `Error searching Google Scholar: ${error.message || "Unknown error"}. This might be due to rate limiting or network issues. Please try again later.`,
           },
         ],
+        isError: true
       };
     }
   },
@@ -1473,6 +1564,15 @@ server.registerTool(
 async function main() {
   const port = Number(process.env.PORT || 3000);
   const host = process.env.HOST || "127.0.0.1";
+  const enableDnsRebindingProtection = process.env.NODE_ENV === 'production' || process.env.ENABLE_DNS_REBINDING_PROTECTION === 'true';
+  
+  // MCP Lifecycle timeout configuration
+  const DEFAULT_REQUEST_TIMEOUT = 30000; // 30 seconds
+  const MAX_REQUEST_TIMEOUT = 300000;   // 5 minutes maximum
+  const requestTimeout = Math.min(
+    Number(process.env.MCP_REQUEST_TIMEOUT || DEFAULT_REQUEST_TIMEOUT),
+    MAX_REQUEST_TIMEOUT
+  );
 
   // Map to store transports by session ID
   const transports: { [sessionId: string]: StreamableHTTPServerTransport } = {};
@@ -1484,6 +1584,31 @@ async function main() {
 
       // Handle all MCP requests on /mcp endpoint
       if (reqUrl.pathname === '/mcp') {
+        // Security: Validate Origin header to prevent DNS rebinding attacks
+        if (enableDnsRebindingProtection) {
+          const origin = req.headers.origin;
+          const allowedOrigins = [
+            `http://${host}:${port}`,
+            `https://${host}:${port}`,
+            'http://localhost:3000',
+            'http://127.0.0.1:3000',
+            ...(process.env.ALLOWED_ORIGINS?.split(',') || [])
+          ];
+          
+          if (origin && !allowedOrigins.includes(origin)) {
+            res.statusCode = 403;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({
+              jsonrpc: '2.0',
+              error: {
+                code: -32000,
+                message: 'Forbidden: Invalid Origin header - DNS rebinding protection enabled',
+              },
+              id: null,
+            }));
+            return;
+          }
+        }
         // Parse request body for POST requests
         let body: any = undefined;
         if (req.method === 'POST') {
@@ -1509,6 +1634,44 @@ async function main() {
           }
         }
 
+        // Check for MCP protocol version header - enhanced error handling per lifecycle spec
+        const protocolVersion = req.headers['mcp-protocol-version'] as string | undefined;
+        const supportedVersions = ['2025-06-18', '2025-03-26'];
+        
+        if (protocolVersion && !supportedVersions.includes(protocolVersion)) {
+          logLifecycleEvent('initialization', {
+            event: 'protocol_version_mismatch',
+            requestedVersion: protocolVersion,
+            supportedVersions,
+            error: 'unsupported_protocol_version'
+          });
+          
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            error: {
+              code: -32602, // Invalid params per JSON-RPC spec
+              message: "Unsupported protocol version",
+              data: {
+                supported: supportedVersions,
+                requested: protocolVersion
+              }
+            },
+            id: null,
+          }));
+          return;
+        }
+        
+        // Default to 2025-03-26 for backwards compatibility if no header provided
+        const negotiatedVersion = protocolVersion || '2025-03-26';
+        
+        logLifecycleEvent('initialization', {
+          event: 'protocol_version_negotiated',
+          negotiatedVersion,
+          headerProvided: !!protocolVersion
+        });
+
         // Check for existing session ID
         const sessionId = req.headers['mcp-session-id'] as string | undefined;
         let transport: StreamableHTTPServerTransport;
@@ -1518,19 +1681,33 @@ async function main() {
           transport = transports[sessionId];
         } else if (!sessionId && req.method === 'POST') {
           // New initialization request
+          logLifecycleEvent('initialization', {
+            event: 'new_session_starting',
+            protocolVersion: negotiatedVersion
+          });
+          
           transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (sessionId) => {
               // Store the transport by session ID
               transports[sessionId] = transport;
+              logLifecycleEvent('initialization', {
+                event: 'session_initialized',
+                sessionId,
+                protocolVersion: negotiatedVersion
+              });
             },
-            // Disable DNS rebinding protection for local development
-            enableDnsRebindingProtection: false,
+            // Use environment-based DNS rebinding protection
+            enableDnsRebindingProtection: enableDnsRebindingProtection,
           });
 
           // Clean up transport when closed
           transport.onclose = () => {
             if (transport.sessionId) {
+              logLifecycleEvent('shutdown', {
+                event: 'session_terminated',
+                sessionId: transport.sessionId
+              });
               delete transports[transport.sessionId];
             }
           };
@@ -1557,6 +1734,60 @@ async function main() {
         return;
       }
 
+      // Handle session termination with HTTP DELETE
+      if (req.method === "DELETE" && reqUrl.pathname === "/mcp") {
+        const sessionId = req.headers['mcp-session-id'] as string | undefined;
+        
+        if (!sessionId) {
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            error: {
+              code: -32000,
+              message: 'Bad Request: No session ID provided for termination',
+            },
+            id: null,
+          }));
+          return;
+        }
+
+        if (transports[sessionId]) {
+          // Close the transport and clean up
+          try {
+            const transport = transports[sessionId];
+            await transport.close();
+            delete transports[sessionId];
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ status: 'session terminated', sessionId }));
+          } catch (error) {
+            res.statusCode = 500;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({
+              jsonrpc: '2.0',
+              error: {
+                code: -32000,
+                message: 'Failed to terminate session',
+              },
+              id: null,
+            }));
+          }
+        } else {
+          res.statusCode = 404;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            error: {
+              code: -32000,
+              message: 'Session not found',
+            },
+            id: null,
+          }));
+        }
+        return;
+      }
+
       // Health check endpoint
       if (req.method === "GET" && reqUrl.pathname === "/health") {
         res.statusCode = 200;
@@ -1577,9 +1808,104 @@ async function main() {
   });
 
   httpServer.listen(port, host, () => {
+    logLifecycleEvent('initialization', {
+      event: 'server_started',
+      host,
+      port,
+      endpoint: `http://${host}:${port}/mcp`,
+      security: {
+        dnsRebindingProtection: enableDnsRebindingProtection,
+        allowedOrigins: process.env.ALLOWED_ORIGINS?.split(',') || []
+      }
+    });
+    
     console.error(`Medical MCP Streamable HTTP server listening at http://${host}:${port}`);
     console.error(`MCP endpoint: http://${host}:${port}/mcp`);
     console.error(`Health check: http://${host}:${port}/health`);
+  });
+
+  // Graceful shutdown handlers as per MCP lifecycle specification
+  const gracefulShutdown = async (signal: string) => {
+    logLifecycleEvent('shutdown', {
+      event: 'shutdown_initiated',
+      signal,
+      activeTransports: Object.keys(transports).length
+    });
+
+    console.error(`\nReceived ${signal}. Starting graceful shutdown...`);
+    
+    // Close all active MCP transports
+    const shutdownPromises = Object.entries(transports).map(async ([sessionId, transport]) => {
+      try {
+        logLifecycleEvent('shutdown', {
+          event: 'transport_closing',
+          sessionId
+        });
+        await transport.close();
+        delete transports[sessionId];
+      } catch (error) {
+        logLifecycleEvent('shutdown', {
+          event: 'transport_close_error',
+          sessionId,
+          error: String(error)
+        });
+      }
+    });
+
+    await Promise.allSettled(shutdownPromises);
+
+    // Close HTTP server
+    httpServer.close((error) => {
+      if (error) {
+        logLifecycleEvent('shutdown', {
+          event: 'server_close_error',
+          error: String(error)
+        });
+        process.exit(1);
+      } else {
+        logLifecycleEvent('shutdown', {
+          event: 'shutdown_complete'
+        });
+        console.error('Graceful shutdown complete');
+        process.exit(0);
+      }
+    });
+
+    // Force exit after 10 seconds if graceful shutdown fails
+    setTimeout(() => {
+      logLifecycleEvent('shutdown', {
+        event: 'forced_shutdown',
+        reason: 'timeout_exceeded'
+      });
+      console.error('Forcing shutdown after timeout');
+      process.exit(1);
+    }, 10000);
+  };
+
+  // Register shutdown handlers for different signals
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+  process.on('SIGHUP', () => gracefulShutdown('SIGHUP'));
+  
+  // Handle uncaught exceptions and unhandled rejections
+  process.on('uncaughtException', (error) => {
+    logLifecycleEvent('shutdown', {
+      event: 'uncaught_exception',
+      error: String(error),
+      stack: error.stack
+    });
+    console.error('Uncaught Exception:', error);
+    gracefulShutdown('UNCAUGHT_EXCEPTION');
+  });
+
+  process.on('unhandledRejection', (reason, promise) => {
+    logLifecycleEvent('shutdown', {
+      event: 'unhandled_rejection',
+      reason: String(reason),
+      promise: String(promise)
+    });
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    gracefulShutdown('UNHANDLED_REJECTION');
   });
 }
 
