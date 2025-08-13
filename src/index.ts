@@ -1807,13 +1807,22 @@ async function main() {
           
           res.statusCode = 400;
           res.setHeader('Content-Type', 'application/json');
+          
+          // Provide more helpful error message based on the situation
+          let errorMessage = 'Bad Request: No valid session ID provided';
+          if (sessionId && !transports[sessionId]) {
+            errorMessage = `Session '${sessionId}' not found. Please re-initialize the MCP session with an 'initialize' request (without mcp-session-id header).`;
+          } else if (!sessionId && req.method === 'POST' && !isInitializeRequest(body)) {
+            errorMessage = `Missing session ID. Please start with an 'initialize' request to establish a session.`;
+          }
+          
           res.end(JSON.stringify({
             jsonrpc: '2.0',
             error: {
               code: -32000,
-              message: 'Bad Request: No valid session ID provided',
+              message: errorMessage,
             },
-            id: null,
+            id: body?.id || null,
           }));
           return;
         }
