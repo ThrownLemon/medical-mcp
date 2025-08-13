@@ -1,10 +1,11 @@
 import "dotenv/config";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-// Note: Manual CORS implementation below, cors package kept for future use
+
 import {
   getDrugByNDC,
   getHealthIndicators,
@@ -19,19 +20,7 @@ import {
   getItemByCode,
 } from "./utils.js";
 
-const server = new McpServer({
-  name: "medical-mcp",
-  version: "1.0.0",
-  capabilities: {
-    tools: {
-      listChanged: true  // Supports notifications when tool list changes
-    },
-    logging: {},  // Supports structured logging
-    // Note: We don't expose prompts or resources currently, but we have extensive tools
-    // resources: { listChanged: true, subscribe: false },  // Would be for file/data resources
-    // prompts: { listChanged: true },  // Would be for prompt templates
-  },
-});
+// Server instances are created per-session via buildServer()
 
 // CORS Configuration for Browser-Based MCP Clients
 // Manual implementation to ensure Mcp-Session-Id header is properly exposed
@@ -414,7 +403,21 @@ function summarizeItems(items: any[], max: number): string {
   return lines.join("\n");
 }
 
-// MCP Tools
+function buildServer(): McpServer {
+  const server = new McpServer({
+    name: "medical-mcp",
+    version: "1.0.0",
+    capabilities: {
+      tools: {
+        listChanged: true
+      },
+      logging: {},
+      // resources: { listChanged: true, subscribe: false },
+      // prompts: { listChanged: true },
+    },
+  });
+
+  // MCP Tools
 server.registerTool(
   "search-drugs",
   {
@@ -1580,6 +1583,8 @@ server.registerTool(
     }
   },
 );
+  return server;
+}
 
 async function main() {
   const port = Number(process.env.PORT || 3000);
@@ -1594,8 +1599,9 @@ async function main() {
     MAX_REQUEST_TIMEOUT
   );
 
-  // Map to store transports by session ID
+  // Map to store transports and servers by session ID
   const transports: { [sessionId: string]: StreamableHTTPServerTransport } = {};
+  const servers: { [sessionId: string]: McpServer } = {};
 
   const httpServer = createServer();
   httpServer.on('request', async (req: IncomingMessage, res: ServerResponse) => {
@@ -1642,6 +1648,24 @@ async function main() {
             return;
           }
         }
+        // Validate Accept header for Streamable HTTP (must accept both JSON and SSE)
+        const accept = String(req.headers['accept'] || '').toLowerCase();
+        if (req.method === 'POST') {
+          if (!(accept.includes('application/json') && accept.includes('text/event-stream'))) {
+            res.statusCode = 406;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({
+              jsonrpc: '2.0',
+              error: {
+                code: -32000,
+                message: 'Not Acceptable: Client must accept both application/json and text/event-stream',
+              },
+              id: null,
+            }));
+            return;
+          }
+        }
+
         // Parse request body for POST requests
         let body: any = undefined;
         if (req.method === 'POST') {
@@ -1712,18 +1736,25 @@ async function main() {
         if (sessionId && transports[sessionId]) {
           // Reuse existing transport
           transport = transports[sessionId];
-        } else if (!sessionId && req.method === 'POST') {
+          // Handle the request with existing transport
+          await transport.handleRequest(req, res, body);
+          return;
+        } else if (!sessionId && req.method === 'POST' && isInitializeRequest(body)) {
           // New initialization request
           logLifecycleEvent('initialization', {
             event: 'new_session_starting',
             protocolVersion: negotiatedVersion
           });
           
+          // Build a new MCP server instance for this session
+          let server = buildServer();
+
           transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (sessionId) => {
               // Store the transport by session ID
               transports[sessionId] = transport;
+              servers[sessionId] = server;
               logLifecycleEvent('initialization', {
                 event: 'session_initialized',
                 sessionId,
@@ -1735,18 +1766,23 @@ async function main() {
           });
 
           // Clean up transport when closed
-          transport.onclose = () => {
+          transport.onclose = async () => {
             if (transport.sessionId) {
               logLifecycleEvent('shutdown', {
                 event: 'session_terminated',
                 sessionId: transport.sessionId
               });
+              delete servers[transport.sessionId];
               delete transports[transport.sessionId];
             }
           };
 
           // Connect to the MCP server
           await server.connect(transport);
+          
+          // Handle the request
+          await transport.handleRequest(req, res, body);
+          return;
         } else {
           // Invalid request
           res.statusCode = 400;
@@ -1761,10 +1797,6 @@ async function main() {
           }));
           return;
         }
-
-        // Handle the request
-        await transport.handleRequest(req, res, body);
-        return;
       }
 
       // Handle session termination with HTTP DELETE
@@ -1786,10 +1818,13 @@ async function main() {
         }
 
         if (transports[sessionId]) {
-          // Close the transport and clean up
+          // Close the server and transport and clean up
           try {
             const transport = transports[sessionId];
-            await transport.close();
+            const server = servers[sessionId];
+            try { await server?.close(); } catch {}
+            try { await transport.close(); } catch {}
+            delete servers[sessionId];
             delete transports[sessionId];
             res.statusCode = 200;
             res.setHeader('Content-Type', 'application/json');
