@@ -1,8 +1,25 @@
-# Medical MCP Server
+# Medical MCP Server - Comprehensive Medical Information Hub
 
 A Model Context Protocol (MCP) server (Streamable HTTP transport) that provides comprehensive medical information by querying multiple authoritative sources: FDA, WHO, PubMed, RxNorm, Google Scholar (with optional SerpAPI), and Australia's PBS Public API.
 
-## Features
+Whether you're a healthcare professional, researcher, or developer, this server gives you instant access to reliable medical data through a simple, unified interface.
+
+## 📋 Table of Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [MCP Client Configuration](#mcp-client-configuration)
+- [Usage](#usage)
+- [MCP Protocol Compliance](#mcp-protocol-compliance)
+- [MCP Tools Implementation](#mcp-tools-implementation)
+- [Error Handling](#error-handling)
+- [Web Scraping Implementation](#web-scraping-implementation)
+- [Medical Disclaimer](#medical-disclaimer)
+- [Architecture](#architecture)
+- [Dependencies](#dependencies)
+- [License](#license)
+
+## ✨ Features
 
 This MCP server offers **22 medical tools** organized by capability:
 
@@ -12,7 +29,7 @@ This MCP server offers **22 medical tools** organized by capability:
 
 **📊 Health Statistics (WHO)**
 - `get-health-statistics` - WHO Global Health Observatory data
-- `list-who-indicators` - Discover available health indicators  
+- `list-who-indicators` - Discover available health indicators
 
 **📚 Medical Literature**
 - `search-medical-literature` - PubMed research articles
@@ -53,7 +70,7 @@ Search for drug information using the FDA database.
 
 **Example:**
 
-```
+```text
 Drug Search Results for "Advil"
 
 Found 1 drug(s)
@@ -97,7 +114,7 @@ Get health statistics and indicators from WHO Global Health Observatory.
 
 **Example:**
 
-```
+```text
 Health Statistics: Life expectancy at birth (years)
 
 Country: USA
@@ -126,7 +143,7 @@ Search for medical research articles in PubMed.
 
 **Example:**
 
-```
+```text
 Medical Literature Search: "diabetes treatment"
 
 Found 10 article(s)
@@ -151,7 +168,7 @@ Search for academic research articles using Google Scholar. If you set `SERPAPI_
 
 **Example:**
 
-```
+```text
 Google Scholar Search: "machine learning healthcare"
 
 Found 10 article(s)
@@ -255,9 +272,16 @@ Environment variables (AU helpers):
 - `PBS_API_BASE` (required for PBS): e.g. `https://data-api.health.gov.au/pbs/api/v3`
 - `PBS_SUBSCRIPTION_KEY` (optional): public key per docs or your own
 
-## Installation
+## 🚀 Installation
 
-1. Clone this repository:
+### Prerequisites
+
+- Node.js 18 or higher
+- npm or yarn package manager
+
+### Steps
+
+1. **Clone this repository:**
 
 ```bash
 git clone <repository-url>
@@ -285,6 +309,8 @@ cp .env.example .env
 # Edit .env with your preferred settings
 # The default values will work for basic usage
 ```
+
+The configuration file [`.env.example`](.env.example) contains all available environment variables with their default values.
 
 ## MCP Client Configuration
 
@@ -329,19 +355,21 @@ Add to your MCP client configuration:
 
 The server will be started automatically by the MCP client.
 
-## Usage
+## 🎯 Usage
 
 ### Running the Server (Streamable HTTP)
 
-Start the MCP server (Streamable HTTP transport):
+Getting started is easy! Start the MCP server with Streamable HTTP transport:
 
 ```bash
 npm run build && node build/index.js
 ```
 
-Environment variables (see also `.env.example`):
+### Environment Configuration
 
-**Core Configuration:**
+The server supports extensive configuration through environment variables. See [`.env.example`](.env.example) for all available options.
+
+**Key Configuration Options:**
 - `PORT` (default: `3000`) - Server port
 - `HOST` (default: `127.0.0.1`) - Server host
 - `NODE_ENV` - Set to `production` to enable security features
@@ -365,7 +393,7 @@ Environment variables (see also `.env.example`):
 
 Config constants
 
-These are read from env via `src/constants.ts`:
+These are read from env via [`src/constants.ts`](src/constants.ts):
 
 - `PBS_API_BASE`
 - `DEFAULT_COUNTRY_ISO3`
@@ -380,7 +408,7 @@ Once started:
 
 Point your MCP client to the `/mcp` endpoint. The server uses Streamable HTTP transport with automatic session management.
 
-## MCP Protocol Compliance
+## 🛡️ MCP Protocol Compliance
 
 This server implements the **MCP Protocol Version 2025-06-18** specification with full Streamable HTTP transport support:
 
@@ -451,7 +479,7 @@ Event types include:
 - `shutdown_initiated` - Graceful shutdown started
 - `shutdown_complete` - Server shutdown finished
 
-## MCP Tools Implementation
+## 🔧 MCP Tools Implementation
 
 This server implements 23+ medical tools with full compliance to the **MCP Tools specification**:
 
@@ -690,7 +718,7 @@ This MCP server integrates with the following medical APIs:
 - **API Base**: `https://data-api.health.gov.au/pbs/api/v3`
 - **Rate Limits**: Approximately 1 request per 20 seconds (globally throttled)
 
-## Error Handling
+## ⚠️ Error Handling
 
 The server includes comprehensive error handling:
 
@@ -699,7 +727,7 @@ The server includes comprehensive error handling:
 - Rate limiting and API errors are handled gracefully
 - Fallback responses when specific APIs are unavailable
 
-## Web Scraping Implementation
+## 🕷️ Web Scraping Implementation
 
 The Google Scholar integration uses Puppeteer for web scraping with the following features:
 
@@ -725,7 +753,7 @@ The Google Scholar integration uses Puppeteer for web scraping with the followin
 - **Timeout Handling**: Configurable timeouts for network requests
 - **Error Recovery**: Automatic retry logic for failed requests
 
-## Medical Disclaimer
+## ⚕️ Medical Disclaimer
 
 **Important**: This MCP server provides information from authoritative medical sources but should not be used as a substitute for professional medical advice, diagnosis, or treatment. Always consult with qualified healthcare professionals for medical decisions.
 
@@ -734,7 +762,7 @@ The Google Scholar integration uses Puppeteer for web scraping with the followin
 - Health statistics are aggregated data and may not reflect individual circumstances
 - Medical literature should be interpreted by qualified healthcare professionals
 
-## Architecture
+## 🏗️ Architecture
 
 ### MCP Server Implementation
 
@@ -757,7 +785,7 @@ The server integrates with multiple authoritative medical APIs:
 - **PBS API**: Australian pharmaceutical benefits information
 - **Google Scholar**: Academic research via web scraping + optional SerpAPI
 
-## Dependencies
+## 📦 Dependencies
 
 - `@modelcontextprotocol/sdk` - MCP SDK for server implementation
 - `superagent` - HTTP client for API requests
@@ -765,6 +793,6 @@ The server integrates with multiple authoritative medical APIs:
 - `zod` - Schema validation for tool parameters
 - `crypto` - Session ID generation for MCP sessions
 
-## License
+## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
